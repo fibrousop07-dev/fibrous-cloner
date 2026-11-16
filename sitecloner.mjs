@@ -59,10 +59,26 @@ function toRel(pn, isHtml) {
   return segs.join(path.sep);
 }
 
+// Optional hooks for hosted use: urlGuard(url) throws to refuse a request (SSRF protection), maxBody caps one response.
+let urlGuard = null, maxBody = 0;
+function setFetchLimits(opts = {}) { urlGuard = opts.urlGuard || null; maxBody = opts.maxBody || 0; }
+
 async function get(u, extra = {}) {
-  const res = await fetch(u, { headers: { 'User-Agent': UA, Accept: '*/*', ...extra }, redirect: 'follow', signal: AbortSignal.timeout(120000) });
+  let url = u, res;
+  for (let hop = 0; ; hop++) {
+    if (urlGuard) await urlGuard(new URL(url));
+    res = await fetch(url, { headers: { 'User-Agent': UA, Accept: '*/*', ...extra }, redirect: urlGuard ? 'manual' : 'follow', signal: AbortSignal.timeout(120000) });
+    if (urlGuard && res.status >= 300 && res.status < 400 && res.headers.get('location')) {
+      if (hop >= 5) throw new Error('too many redirects');
+      url = new URL(res.headers.get('location'), url).href;
+      continue;
+    }
+    break;
+  }
+  if (maxBody && Number(res.headers.get('content-length') || 0) > maxBody) throw new Error('response too large');
   const buf = Buffer.from(await res.arrayBuffer());
-  return { url: res.url, ok: res.ok, status: res.status, type: res.headers.get('content-type') || '', waf: res.headers.get('x-amzn-waf-action') || '', buf };
+  if (maxBody && buf.length > maxBody) throw new Error('response too large');
+  return { url: urlGuard ? url : res.url, ok: res.ok, status: res.status, type: res.headers.get('content-type') || '', waf: res.headers.get('x-amzn-waf-action') || '', buf };
 }
 
 function openBrowser(url) {
@@ -819,7 +835,7 @@ async function main() {
   if (res !== 'serve') process.exit(0);
 }
 
-export { fetchMissingAssets, inspectSaved, importSaved, isSavedPage, crawl, listen, normalizeUrl, openBrowser, CLONES, META, readMeta, writeMeta, refreshApi, frontendStats, backendStats, deleteFrontend, deleteBackend };
+export { setFetchLimits, fetchMissingAssets, inspectSaved, importSaved, isSavedPage, crawl, listen, normalizeUrl, openBrowser, CLONES, META, readMeta, writeMeta, refreshApi, frontendStats, backendStats, deleteFrontend, deleteBackend };
 
 // run the CLI only when executed directly (ui.mjs imports this file as a library)
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

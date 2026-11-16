@@ -49,6 +49,16 @@ It installs to `%LOCALAPPDATA%\Programs\SiteCloner`, adds Start-menu and desktop
 
 Run `Install.cmd` to add a **SiteCloner** Start-menu entry and desktop shortcut that opens the panel in its own window. `Uninstall.cmd` removes them; your clones are never deleted.
 
+## Web app
+
+`web/` is a hosted version with accounts, saved clones, ad slots and SEO files. It needs Node 22.5 or newer (built-in SQLite).
+
+```bash
+PORT=8080 node web/server.mjs     # http://localhost:8080
+```
+
+Guests can copy a site (kept for 2 hours); logged-in users keep their copies. Deploy to a VPS with `deploy/setup-vps.sh`, see [web/README.md](web/README.md).
+
 ## Configuration
 
 | Environment variable | Purpose |
