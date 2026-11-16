@@ -490,8 +490,8 @@ const PAGE = String.raw`<!doctype html>
 <title>SiteCloner</title>
 <link rel="icon" href="/icon.png"><meta name="theme-color" content="#15111a">
 <style>
-:root{--bg:#17181b;--side:#0f1012;--top:#1c1e21;--fg:#f1f2f4;--card:#1c1e21;--card2:#1f2124;--hover:#2a2c31;--active:#212032;--border:#313338;--input:#6a6d78;--muted:#9a9ca5;--muted-fg:#c6c8ce;--primary:#8b7cf6;--primary-fg:#100d24;--ring:#8b7cf6;--ok:#52d094;--warn:#f0a83d;--bad:#f27878;--teal:#5fd8c8;--shadow:0 12px 32px -10px rgba(0,0,0,.7);color-scheme:dark}
-@media (prefers-color-scheme:light){:root{--bg:#f4f4f6;--side:#ebebef;--top:#fff;--fg:#17181b;--card:#fff;--card2:#ececf0;--hover:#e2e2e8;--active:#e8e5fb;--border:#d6d7dd;--input:#8b8d98;--muted:#5d5f68;--muted-fg:#4a4c55;--primary:#5646d0;--primary-fg:#fff;--ring:#5646d0;--ok:#17703c;--warn:#8a5a00;--bad:#b3261e;--teal:#095f58;--shadow:0 12px 32px -12px rgba(30,30,50,.28);color-scheme:light}}
+:root{--bg:#17181b;--side:#0f1012;--top:#1c1e21;--fg:#f1f2f4;--card:#1c1e21;--card2:#1f2124;--hover:#2a2c31;--active:#2b241d;--border:#313338;--input:#6a6d78;--muted:#9a9ca5;--muted-fg:#c6c8ce;--primary:#f08a4b;--primary-fg:#1d1209;--ring:#f08a4b;--ok:#52d094;--warn:#f0a83d;--bad:#f27878;--teal:#5fd8c8;--shadow:0 12px 32px -10px rgba(0,0,0,.7);color-scheme:dark}
+@media (prefers-color-scheme:light){:root{--bg:#f4f4f6;--side:#ebebef;--top:#fff;--fg:#17181b;--card:#fff;--card2:#ececf0;--hover:#e2e2e8;--active:#f6e8dc;--border:#d6d7dd;--input:#8b8d98;--muted:#5d5f68;--muted-fg:#4a4c55;--primary:#b4500f;--primary-fg:#fff;--ring:#b4500f;--ok:#17703c;--warn:#8a5a00;--bad:#b3261e;--teal:#095f58;--shadow:0 12px 32px -12px rgba(30,30,50,.28);color-scheme:light}}
 *{box-sizing:border-box}
 body:before{content:"";position:fixed;inset:0;pointer-events:none;background:radial-gradient(720px 340px at 8% -6%,color-mix(in srgb,var(--primary) 13%,transparent),transparent 70%),radial-gradient(620px 300px at 100% 112%,color-mix(in srgb,#f29bb8 8%,transparent),transparent 70%)}
 ::selection{background:color-mix(in srgb,var(--primary) 35%,transparent)}
@@ -617,8 +617,8 @@ details.grp li em{font-style:normal;color:var(--muted)}
 .pvwrap{max-width:100%;transition:width .2s}
 .pvframe{display:block;width:100%;height:calc(100vh - 380px);min-height:380px;border:1px solid var(--border);border-radius:8px;background:#fff}
 .side{background:var(--side)}
-.top{background:linear-gradient(180deg,color-mix(in srgb,var(--primary) 10%,transparent),transparent)}
-button.primary{background-image:linear-gradient(180deg,color-mix(in srgb,var(--primary) 80%,#fff),var(--primary))}
+.top{background:var(--top)}
+button.primary{background-image:none}
 .tabs button[aria-selected=true]{border-bottom-width:3px}
 .lc{border-top:3px solid var(--lc);background:linear-gradient(180deg,color-mix(in srgb,var(--lc) 10%,var(--card)),var(--card) 75%)}
 .lc-fe{--lc:var(--teal)}.lc-be{--lc:var(--warn)}.lc-live{--lc:var(--ok)}
@@ -773,10 +773,8 @@ button.primary:hover{background:color-mix(in srgb,var(--primary) 88%,#fff)}
 @media (max-width:759px){.notice{margin:0 10px 8px;flex-wrap:wrap}.nbtns{max-width:none;justify-content:flex-start}.imp2{grid-template-columns:1fr}}
 /* ---- glow-up polish: depth, rhythm, focus, motion (no layout changes) ---- */
 :root{--r:12px;--ease:cubic-bezier(.2,.7,.2,1)}
-.card{border-radius:var(--r);background:linear-gradient(180deg,color-mix(in srgb,var(--card) 92%,#fff 8%),var(--card));box-shadow:0 1px 0 rgba(255,255,255,.03) inset,0 1px 2px rgba(0,0,0,.18);transition:border-color .18s var(--ease),transform .18s var(--ease),box-shadow .18s var(--ease)}
-@media (prefers-color-scheme:light){.card{background:var(--card);box-shadow:0 1px 2px rgba(30,30,50,.06)}}
+.card{border-radius:var(--r);transition:border-color .18s var(--ease)}
 .card:hover{border-color:color-mix(in srgb,var(--primary) 35%,var(--border))}
-button.primary,button.pri{box-shadow:0 1px 0 rgba(255,255,255,.25) inset,0 6px 16px -8px color-mix(in srgb,var(--primary) 70%,transparent)}
 button:active{transform:translateY(1px)}
 button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--ring);outline-offset:2px;border-radius:8px}
 .tabs button{transition:background .15s var(--ease),color .15s var(--ease)}

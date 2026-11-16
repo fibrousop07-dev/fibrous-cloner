@@ -1,19 +1,17 @@
 # SiteCloner
 
-Copy a website's **frontend**, plus the **public API answers** it loads, and run the copy on `localhost`. Manage your clones from a small control panel (or the command line).
+A small Node tool that downloads a website's frontend and the public API responses it loads, then serves the copy on localhost. It comes with a local control panel for managing clones, and a CLI.
 
-- Zero dependencies, just Node.js 18+
-- Control panel with search, folders, a download queue, and per-clone Start/Stop
-- Detects client-side routes (SPAs) and serves them via `index.html`
-- Saves public API responses and replays them so the clone works offline
-- Windows launcher (Start menu / desktop shortcut) and a plain CLI that works anywhere Node runs
+It only copies what a browser can already see. Server code and databases can't be downloaded, and sites behind bot protection may refuse the crawler (the panel has an "Import saved page" fallback for those).
 
-> **Use responsibly.** Only clone sites you own or have permission to copy. Cloned content stays the property of its owners. SiteCloner copies what a browser can already see; server code and databases cannot be downloaded.
+Only clone sites you own or have permission to copy.
+
+Requires Node.js 18 or newer. No npm dependencies.
 
 ## Quick start
 
 ```bash
-git clone https://github.com/<you>/sitecloner.git
+git clone https://github.com/fibrousop07-dev/sitecloner.git
 cd sitecloner
 node ui.mjs            # opens the control panel at http://localhost:4200
 ```

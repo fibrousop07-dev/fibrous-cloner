@@ -31,7 +31,7 @@ const over = (dst, src, a) => [src[0] * a + dst[0] * (1 - a), src[1] * a + dst[1
 
 function render(S) {
   const buf = Buffer.alloc(S * S * 4);
-  const top = [74, 39, 102], bot = [33, 24, 39], orchid = [197, 139, 242];
+  const top = [66, 44, 28], bot = [27, 22, 18], orchid = [240, 138, 75];
   for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
     const px = x + 0.5, py = y + 0.5;
     const bgA = cov(sdBox(px, py, S / 2, S / 2, S / 2, S / 2, S * 0.22));
@@ -49,7 +49,7 @@ function render(S) {
     const tx = (px - S * 0.545) / S, ty = (py - S * 0.58) / S; // triangle pointing right
     const h = 0.085, w = 0.1;
     const inTri = tx >= -w * 0.5 && tx <= w * 0.9 && Math.abs(ty) <= h * (1 - (tx + w * 0.5) / (w * 1.4));
-    if (inTri && front > 0.5) col = over(col, [33, 24, 39], 1);
+    if (inTri && front > 0.5) col = over(col, [27, 22, 18], 1);
     const o = (y * S + x) * 4;
     buf[o] = col[0]; buf[o + 1] = col[1]; buf[o + 2] = col[2]; buf[o + 3] = Math.round(bgA * 255);
   }
