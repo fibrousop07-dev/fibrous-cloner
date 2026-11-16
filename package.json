@@ -1,0 +1,14 @@
+{
+  "name": "sitecloner",
+  "version": "1.0.0",
+  "description": "Copy a website's frontend (plus its public API answers), serve it on localhost, and manage clones from a small control panel. Zero dependencies.",
+  "type": "module",
+  "bin": { "sitecloner": "sitecloner.mjs" },
+  "scripts": {
+    "start": "node ui.mjs",
+    "installer": "powershell -ExecutionPolicy Bypass -File installer/build.ps1",
+    "check": "node --check sitecloner.mjs && node --check ui.mjs && node --check app.mjs && node --check make-icon.mjs"
+  },
+  "engines": { "node": ">=18" },
+  "keywords": ["website", "cloner", "scraper", "offline", "localhost", "frontend"]
+}
