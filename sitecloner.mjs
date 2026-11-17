@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// sitecloner - copy a website's frontend, serve it on localhost, let you confirm.
+// fibrous-cloner CLI (formerly SiteCloner) - copy a website's frontend, serve it on localhost, let you confirm.
 //   node sitecloner.mjs <url>            clone + serve + confirm
 //   node sitecloner.mjs serve <folder>   serve an existing clone
 // Flags: --out <dir> --port <n> --max <files> --no-open --answer <y|n|s>
@@ -14,7 +14,16 @@ import { exec } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const CLONES = process.env.SITECLONER_CLONES ? path.resolve(process.env.SITECLONER_CLONES) : path.join(HERE, 'clones');
+// FIBROUS_SITES_<name>, falling back to the pre-rename SITECLONER_<name> (with a one-time deprecation note).
+const warnedEnv = new Set();
+function envOpt(name) {
+  const v = process.env['FIBROUS_SITES_' + name]; if (v) return v;
+  const old = process.env['SITECLONER_' + name];
+  if (old && !warnedEnv.has(name)) { warnedEnv.add(name); console.warn(`SITECLONER_${name} is deprecated, use FIBROUS_SITES_${name}`); }
+  return old || '';
+}
+const CLONES = envOpt('CLONES') ? path.resolve(envOpt('CLONES')) : path.join(HERE, 'clones');
+// clone bookkeeping files keep their _sitecloner* names so existing clones keep working
 const META = '_sitecloner.json';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36';
 const ASSET_EXT = 'png|jpe?g|gif|webp|avif|svg|ico|css|js|mjs|json|woff2?|ttf|otf|eot|mp4|webm|mp3|ogg|wav|glb|gltf|bin|txt|xml|webmanifest|wasm|hdr|ktx2|map';
@@ -260,6 +269,9 @@ async function crawl(startUrl, out, maxFiles, onProgress, signal, opts = {}) {
   const queue = [];
   const saved = new Set();
   const failed = [];
+  // incremental byte counter (no directory walking); opts.maxBytes stops the crawl instead of saving past the cap
+  const sizes = new Map(); let bytes = 0, capped = false;
+  const capError = () => Object.assign(new Error('size limit'), { code: 'SIZE_CAP' });
   const apiMap = new Map(); // "/api/x" -> { names: parameter names seen next to it in the page code }
   const spaRoutes = new Set();
   let homeHash = null;
@@ -273,6 +285,7 @@ async function crawl(startUrl, out, maxFiles, onProgress, signal, opts = {}) {
     if (!sameSite(u)) return;
     u.hash = '';
     if (/^\/(api|socket\.io|graphql|trpc)(\/|$)/.test(u.pathname)) return;
+    if (opts.allowUrl && !opts.allowUrl(u.href)) return; // robots.txt (hosted use)
     const key = u.pathname + u.search;
     if (seen.has(key)) return;
     seen.add(key);
@@ -301,6 +314,7 @@ async function crawl(startUrl, out, maxFiles, onProgress, signal, opts = {}) {
     if (/xml/.test(type)) for (const m of text.matchAll(/<loc>([^<]+)<\/loc>/g)) enqueue(m[1], from);
   };
 
+  const recent = [];
   const handle = (r) => {
     const fu = new URL(r.url);
     if (!sameSite(fu)) return;
@@ -310,9 +324,13 @@ async function crawl(startUrl, out, maxFiles, onProgress, signal, opts = {}) {
     else if (isHtml && !ext && fu.pathname !== '/' && sha(r.buf) === homeHash) { spaRoutes.add(fu.pathname); return; }
     const file = path.join(out, toRel(fu.pathname, isHtml));
     if (!path.resolve(file).startsWith(path.resolve(out))) return;
+    const nb = bytes - (sizes.get(file) || 0) + r.buf.length;
+    if (opts.maxBytes && nb > opts.maxBytes) { capped = true; return; }
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, r.buf);
+    sizes.set(file, r.buf.length); bytes = nb;
     saved.add(file);
+    recent.push({ p: path.relative(out, file).split(path.sep).join('/'), s: r.buf.length });
     if (/text|javascript|json|xml|html|css/.test(r.type) && r.buf.length < 64e6) scan(r.buf.toString('utf8'), r.type, fu.href);
   };
 
@@ -322,6 +340,7 @@ async function crawl(startUrl, out, maxFiles, onProgress, signal, opts = {}) {
 
   while (queue.length && saved.size < maxFiles) {
     if (signal?.aborted) throw new Error('cancelled');
+    if (capped) throw capError();
     const batch = queue.splice(0, 16);
     await Promise.all(batch.map(async (u) => {
       try {
@@ -330,7 +349,8 @@ async function crawl(startUrl, out, maxFiles, onProgress, signal, opts = {}) {
         handle(r);
       } catch (e) { failed.push(`${u.pathname} -> ${e.message}`); }
     }));
-    if (onProgress) onProgress(saved.size, queue.length);
+    if (capped) throw capError();
+    if (onProgress) onProgress(saved.size, queue.length, recent.splice(0));
     else process.stdout.write(`\r  ${dim('crawling')} ${saved.size} files, ${queue.length} queued   `);
   }
   if (!onProgress) process.stdout.write('\n');
@@ -346,8 +366,9 @@ async function crawl(startUrl, out, maxFiles, onProgress, signal, opts = {}) {
   const meta = { ...prev, url: startUrl, origin, host: base.hostname, createdAt: prev.createdAt || new Date().toISOString() };
   if (apiMap.size) meta.endpoints = Object.fromEntries([...apiMap].map(([p, e]) => [p, [...e.names]]));
   if (apiSnap) meta.backend = backendMeta(apiSnap);
+  if (capped) throw capError();
   writeMeta(out, meta);
-  return { meta, saved: saved.size, failed, apiCalls: [...apiMap.keys()].sort(), spaRoutes: [...spaRoutes], apiSnap };
+  return { meta, bytes: bytes + JSON.stringify(meta, null, 2).length, saved: saved.size, failed, apiCalls: [...apiMap.keys()].sort(), spaRoutes: [...spaRoutes], apiSnap };
 }
 
 // ---------- layers: a clone = Frontend (website files) + Backend data (saved public API answers) ----------
@@ -386,7 +407,7 @@ function backendStats(dir) {
 // reading the clone's own JS/HTML files, so this also works on clones made before this feature existed.
 async function refreshApi(dir, signal) {
   const meta = readMeta(dir);
-  if (!meta) throw new Error('not a SiteCloner folder');
+  if (!meta) throw new Error('not a fibrous-cloner clone folder');
   let endpoints = new Map(Object.entries(meta.endpoints || {}).map(([p, names]) => [p, { names: new Set(names) }]));
   if (!endpoints.size) {
     walkFiles(dir, (f, st) => { if (/\.(m?js|html?)$/i.test(f) && st.size < 8e6) { try { collectApi(fs.readFileSync(f, 'utf8'), endpoints); } catch { /* ignore */ } } });
@@ -695,7 +716,7 @@ function makeServer(dir, getPort) {
       const hit = snap[apiKey(u.pathname, u.searchParams.entries())];
       if (hit) {
         stats.snapshotHits++;
-        res.writeHead(hit.status, { 'Content-Type': hit.type, 'Cache-Control': 'no-store', 'X-SiteCloner': 'snapshot' });
+        res.writeHead(hit.status, { 'Content-Type': hit.type, 'Cache-Control': 'no-store', 'X-Fibrous-Sites': 'snapshot' });
         return res.end(hit.body);
       }
     }
@@ -707,7 +728,7 @@ function makeServer(dir, getPort) {
           snap[apiKey(u.pathname, u.searchParams.entries())] = { status: r.status, type: r.type || 'application/json', body: r.buf.toString('utf8') };
           stats.learned++;
           persist();
-          res.writeHead(r.status, { 'Content-Type': r.type || 'application/json', 'Cache-Control': 'no-store', 'X-SiteCloner': 'learned' });
+          res.writeHead(r.status, { 'Content-Type': r.type || 'application/json', 'Cache-Control': 'no-store', 'X-Fibrous-Sites': 'learned' });
           return res.end(r.buf);
         }
       } catch { /* offline or blocked: fall through to the 503 stub */ }
@@ -803,20 +824,20 @@ async function serveFlow(dir, { askConfirm, openIt, port, deletable }) {
 
 async function main() {
   if (flags.help || flags.h) {
-    console.log('Usage:\n  clone <url>             copy site, serve on localhost, confirm\n  clone serve <folder>    serve an existing clone\nFlags: --out <dir> --port <n> --max <files> --no-open --no-api --answer <y|n|s>');
+    console.log('fibrous-cloner — local website cloner\nUsage:\n  fibrous-cloner <url>             copy site, serve on localhost, confirm\n  fibrous-cloner serve <folder>    serve an existing clone\nFlags: --out <dir> --port <n> --max <files> --no-open --no-api --answer <y|n|s>');
     return;
   }
   if (pos[0] === 'ui') { await import('./ui.mjs'); return; }
   if (pos[0] === 'serve') {
     const dir = path.resolve(pos[1] || '.');
-    if (!fs.existsSync(path.join(dir, META))) throw new Error(`${dir} is not a sitecloner folder (no ${META})`);
+    if (!fs.existsSync(path.join(dir, META))) throw new Error(`${dir} is not a fibrous-cloner clone folder (no ${META})`);
     await serveFlow(dir, { askConfirm: false, openIt: !flags['no-open'], port: flags.port });
     return;
   }
   let input = pos[0];
   if (!input) { await import('./ui.mjs'); return; } // no URL given: open the control panel
   const url = normalizeUrl(input);
-  console.log(`\n  ${bold('sitecloner')}  ${url}`);
+  console.log(`\n  ${bold('fibrous-cloner')}  ${url}`);
   console.log(dim('  Only clone sites you own or have permission to copy. Frontend only: no server code or database.'));
 
   const host = new URL(url).hostname.replace(/^www\./, '');
@@ -835,7 +856,7 @@ async function main() {
   if (res !== 'serve') process.exit(0);
 }
 
-export { setFetchLimits, fetchMissingAssets, inspectSaved, importSaved, isSavedPage, crawl, listen, normalizeUrl, openBrowser, CLONES, META, readMeta, writeMeta, refreshApi, frontendStats, backendStats, deleteFrontend, deleteBackend };
+export { envOpt, setFetchLimits, fetchMissingAssets, inspectSaved, importSaved, isSavedPage, crawl, listen, normalizeUrl, openBrowser, CLONES, META, readMeta, writeMeta, refreshApi, frontendStats, backendStats, deleteFrontend, deleteBackend };
 
 // run the CLI only when executed directly (ui.mjs imports this file as a library)
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

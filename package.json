@@ -1,15 +1,41 @@
 {
-  "name": "sitecloner",
+  "name": "fibrous-cloner",
   "version": "1.0.0",
-  "description": "Copy a website's frontend (plus its public API answers), serve it on localhost, and manage clones from a small control panel. Zero dependencies.",
+  "description": "Local website cloner with a desktop control panel and CLI. Download public HTML, CSS, JavaScript, assets and API responses; preview website copies on localhost.",
   "type": "module",
-  "bin": { "sitecloner": "sitecloner.mjs" },
+  "bin": {
+    "fibrous-cloner": "sitecloner.mjs"
+  },
   "scripts": {
     "start": "node ui.mjs",
     "installer": "powershell -ExecutionPolicy Bypass -File installer/build.ps1",
-    "web": "node web/server.mjs",
-    "check": "node --check web/server.mjs && node --check sitecloner.mjs && node --check ui.mjs && node --check app.mjs && node --check make-icon.mjs"
+    "check": "node scripts/check.mjs",
+    "test": "node --test tests/*.test.mjs"
   },
-  "engines": { "node": ">=18" },
-  "keywords": ["website", "cloner", "scraper", "offline", "localhost", "frontend"]
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "site-cloner",
+    "website-cloner",
+    "website-downloader",
+    "offline-browser",
+    "website-archiver",
+    "localhost",
+    "nodejs",
+    "frontend",
+    "cli",
+    "static-site",
+    "api-snapshot"
+  ],
+  "homepage": "https://fibrousop07-dev.github.io/fibrous-cloner/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fibrousop07-dev/fibrous-cloner.git"
+  },
+  "bugs": {
+    "url": "https://github.com/fibrousop07-dev/fibrous-cloner/issues"
+  },
+  "license": "MIT",
+  "author": "fibrousop07-dev"
 }

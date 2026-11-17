@@ -7,14 +7,14 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const STATE_DIR = path.join(process.env.LOCALAPPDATA || os.tmpdir(), 'SiteCloner');
+const STATE_DIR = path.join(process.env.LOCALAPPDATA || os.tmpdir(), 'FibrousSites');
 const STATE = path.join(STATE_DIR, 'panel.json');
 fs.mkdirSync(STATE_DIR, { recursive: true });
 
 async function alive(port) {
   try {
     const r = await fetch(`http://127.0.0.1:${port}/api/ping`, { signal: AbortSignal.timeout(1500) });
-    return (await r.json()).app === 'sitecloner';
+    return ['fibrous-sites', 'sitecloner'].includes((await r.json()).app); // 'sitecloner' = a pre-rename panel still running
   } catch { return false; }
 }
 const readState = () => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch { return null; } };

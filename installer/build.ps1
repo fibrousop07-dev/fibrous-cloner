@@ -1,8 +1,8 @@
-# Builds dist\SiteCloner-Setup.exe with IExpress (built into Windows). Bundles the Node runtime found on PATH.
+# Builds dist\FibrousSites-Setup.exe with IExpress (built into Windows). Bundles the Node runtime found on PATH.
 $ErrorActionPreference = 'Stop'
 $root  = Split-Path -Parent $PSScriptRoot
 $dist  = Join-Path $root 'dist'
-$stage = Join-Path $env:TEMP ('sc-stage-' + [guid]::NewGuid().ToString('N'))
+$stage = Join-Path $env:TEMP ('fs-stage-' + [guid]::NewGuid().ToString('N'))
 $ver   = (Get-Content (Join-Path $root 'package.json') -Raw | ConvertFrom-Json).version
 $node  = (Get-Command node -ErrorAction Stop).Source
 
@@ -16,7 +16,7 @@ Copy-Item (Join-Path $PSScriptRoot 'setup.ps1') $stage
 Set-Content (Join-Path $stage 'version.txt') $ver -Encoding ASCII
 Set-Content (Join-Path $stage 'setup.cmd') '@powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0setup.ps1"' -Encoding ASCII
 
-$out = Join-Path $dist 'SiteCloner-Setup.exe'
+$out = Join-Path $dist 'FibrousSites-Setup.exe'
 Remove-Item $out -Force -ErrorAction SilentlyContinue
 $sed = @"
 [Version]
@@ -35,7 +35,7 @@ InstallPrompt=
 DisplayLicense=
 FinishMessage=
 TargetName=$out
-FriendlyName=SiteCloner Setup
+FriendlyName=fibrous-cloner Setup
 AppLaunched=setup.cmd
 PostInstallCmd=<None>
 AdminQuietInstCmd=

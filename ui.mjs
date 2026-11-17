@@ -1,15 +1,15 @@
-// SiteCloner control panel: paste a URL, press Clone, then press "Start localhost".
-// Run: SiteCloner.cmd  (or: node ui.mjs [--no-open] [--port 4200])
+// fibrous-cloner control panel: paste a URL, press Clone, then press "Start localhost".
+// Run: FibrousSites.cmd  (or: node ui.mjs [--no-open] [--port 4200])
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { crawl, listen, normalizeUrl, openBrowser, CLONES, META, readMeta, writeMeta, refreshApi, frontendStats, backendStats, deleteFrontend, deleteBackend, inspectSaved, importSaved, isSavedPage, fetchMissingAssets } from './sitecloner.mjs';
+import { envOpt, crawl, listen, normalizeUrl, openBrowser, CLONES, META, readMeta, writeMeta, refreshApi, frontendStats, backendStats, deleteFrontend, deleteBackend, inspectSaved, importSaved, isSavedPage, fetchMissingAssets } from './sitecloner.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const STATE_DIR = process.env.SITECLONER_STATE || path.join(process.env.LOCALAPPDATA || os.tmpdir(), 'SiteCloner');
+const STATE_DIR = envOpt('STATE') || path.join(process.env.LOCALAPPDATA || os.tmpdir(), 'FibrousSites');
 const STATE_FILE = path.join(STATE_DIR, 'panel.json');
 const argv = process.argv.slice(2);
 const IS_APP = argv.includes('--app'); // launched by the Start-menu app: quit when its window closes
@@ -398,7 +398,7 @@ const panel = http.createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
     return res.end(PAGE);
   }
-  if (req.method === 'GET' && u.pathname === '/api/ping') return json(res, 200, { app: 'sitecloner', pid: process.pid, port });
+  if (req.method === 'GET' && u.pathname === '/api/ping') return json(res, 200, { app: 'fibrous-sites', pid: process.pid, port });
   if (req.method === 'GET' && u.pathname === '/icon.png') {
     try { const b = fs.readFileSync(path.join(HERE, 'icon.png')); res.writeHead(200, { 'Content-Type': 'image/png' }); return res.end(b); }
     catch { res.writeHead(404); return res.end(); }
@@ -417,7 +417,7 @@ const panel = http.createServer(async (req, res) => {
   if (req.method === 'GET' && u.pathname === '/api/jobs') return json(res, 200, listJobs());
   if (req.method === 'GET' && u.pathname === '/api/folders') return json(res, 200, { folders: scan().folders });
   if (req.method === 'POST') {
-    if (req.headers['x-sitecloner'] !== '1') return json(res, 403, { error: 'missing header' });
+    if (req.headers['x-fibrous-sites'] !== '1') return json(res, 403, { error: 'missing header' });
     const body = await readBody(req);
     try {
       if (u.pathname === '/api/clone') {
@@ -482,12 +482,12 @@ fs.mkdirSync(STATE_DIR, { recursive: true });
 fs.writeFileSync(STATE_FILE, JSON.stringify({ port, pid: process.pid }));
 armIdle(90000); // app mode: if no window ever connects, don't linger
 const panelUrl = `http://localhost:${port}/`;
-console.log(`\n  SiteCloner panel: ${panelUrl}\n  Clones folder:    ${CLONES}\n  Close this window or press Ctrl+C to stop (running clones stop too).\n`);
+console.log(`\n  fibrous-cloner panel: ${panelUrl}\n  Clones folder:    ${CLONES}\n  Close this window or press Ctrl+C to stop (running clones stop too).\n`);
 if (!noOpen) openBrowser(panelUrl);
 
 const PAGE = String.raw`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SiteCloner</title>
+<title>fibrous-cloner</title>
 <link rel="icon" href="/icon.png"><meta name="theme-color" content="#15111a">
 <style>
 :root{--bg:#17181b;--side:#0f1012;--top:#1c1e21;--fg:#f1f2f4;--card:#1c1e21;--card2:#1f2124;--hover:#2a2c31;--active:#2b241d;--border:#313338;--input:#6a6d78;--muted:#9a9ca5;--muted-fg:#c6c8ce;--primary:#f08a4b;--primary-fg:#1d1209;--ring:#f08a4b;--ok:#52d094;--warn:#f0a83d;--bad:#f27878;--teal:#5fd8c8;--shadow:0 12px 32px -10px rgba(0,0,0,.7);color-scheme:dark}
@@ -785,21 +785,37 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,[t
 ::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--muted) 35%,transparent);border-radius:10px;border:2px solid transparent;background-clip:content-box}::-webkit-scrollbar-thumb:hover{background-color:color-mix(in srgb,var(--muted) 60%,transparent)}
 ::selection{background:color-mix(in srgb,var(--primary) 40%,transparent)}
 @media (prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
-.split{grid-template-columns:var(--sidew,288px) 1fr}
+.split{grid-template-columns:var(--sidew,336px) 1fr}
 .side{position:relative}
 .rz{position:absolute;top:0;right:-4px;width:9px;height:100%;cursor:col-resize;z-index:20;touch-action:none}
 .rz:after{content:"";position:absolute;left:4px;top:0;width:1px;height:100%;background:transparent;transition:background .15s,width .15s,left .15s}
 .rz:hover:after,.rz.on:after,.rz:focus-visible:after{background:var(--primary);width:3px;left:3px}
 body.rzing{cursor:col-resize;user-select:none}body.rzing iframe{pointer-events:none}
 @media (max-width:759px){.split{grid-template-columns:1fr}.rz{display:none}}
+
+/* Local library workspace. */
+body:before{display:none}body{font-size:14px;font-variant-numeric:tabular-nums}
+.top{padding:16px 24px}.top h1{letter-spacing:-.03em}.top h1 small{letter-spacing:0}
+.sidehead{padding:18px 14px 12px;gap:12px}.search input{height:38px}.search svg{top:11px}
+.library-tools{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted-fg)}.library-tools select{flex:1;min-width:0;border-color:var(--border)}
+.fh,.fhb{min-width:0}.fnm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row{padding:10px 8px;min-height:58px}.row .nm{font-size:13px}.row .sb{font-size:11px}
+.fh,.row{--indent:min(calc(var(--d,0)*10px),40px);margin-left:var(--indent)}.row{width:calc(100% - var(--indent))}.list{overflow-x:hidden}
+.composer{margin:20px 24px 16px}.composer-label{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px 0;font-size:12px}.composer-label span{color:var(--muted)}.composer form{padding:10px;align-items:center}.composer textarea{min-height:40px}.composer .go{height:40px}
+.dhead{padding:12px 28px 18px;gap:14px}.dhead .name{font-size:26px;letter-spacing:-.035em}.tabs{padding:0 28px;gap:12px}.tabs button{height:44px;padding:0 4px}
+.panel{max-width:1200px;padding:24px 28px 48px;gap:18px}.card{padding:20px}.card h3{font-size:13px}.big{font-size:30px}.grid2{gap:18px}.org{opacity:1}.kv{grid-template-columns:140px minmax(0,1fr)}
+@media(min-width:1400px){.panel.overview{grid-template-columns:minmax(0,1.4fr) minmax(280px,1fr)}.overview>.grid2{grid-column:1/-1}.overview>.card{align-self:start}}
+@media(max-width:950px){.composer-label span{display:none}.dhead{padding:12px 18px}.panel{padding:18px}.composer{margin:12px}.top h1 small{display:none}}
+@media(max-width:759px){.composer form{flex-wrap:wrap}.composer textarea{flex-basis:100%}.composer .go{margin-left:auto}.dhead .name{font-size:22px}.grid2{grid-template-columns:1fr}.tabs{padding:0 16px;gap:8px}}
+
 </style></head>
 <body>
 <div id="app" data-view="list">
   <header class="top">
     <img src="/icon.png" alt="" width="30" height="30">
-    <h1>SiteCloner<small>Copy a site's frontend and public backend data, then run it on localhost</small></h1>
+    <h1>fibrous-cloner<small>Your local website library</small></h1>
     <button id="gear" class="ghost icon" type="button" aria-label="Settings" aria-haspopup="true" aria-expanded="false" title="Settings"></button>
-    <button id="quit" class="ghost sm" type="button" title="Stop SiteCloner and every running copy"></button>
+    <button id="quit" class="ghost sm" type="button" title="Stop fibrous-cloner and every running copy"></button>
   </header>
 
   <div class="split">
@@ -811,7 +827,7 @@ body.rzing{cursor:col-resize;user-select:none}body.rzing iframe{pointer-events:n
           <button type="button" data-f="running" aria-pressed="false">Running</button>
           <button type="button" data-f="needs" aria-pressed="false">Needs data</button>
         </div>
-        <div class="count" id="count"></div>
+        <div class="library-tools"><label for="sort">Sort</label><select id="sort"><option value="name">Name A-Z</option><option value="recent">Newest first</option><option value="size">Largest first</option></select><button type="button" id="foldall" class="ghost sm">Collapse folders</button></div><div class="count" id="count" role="status"></div>
         <div class="tagbar" id="tagbar" hidden></div>
       </div>
       <div class="navlabel"><span>Clones</span><button type="button" id="newfolder" class="ghost icon sm" aria-label="New folder" title="New folder"></button></div>
@@ -819,7 +835,7 @@ body.rzing{cursor:col-resize;user-select:none}body.rzing iframe{pointer-events:n
     </aside>
     <div class="rightcol">
   <section class="composer" aria-label="Clone a site">
-    <form id="f">
+    <div class="composer-label"><b>Add a website</b><span>Enter to queue / Shift + Enter for another URL</span></div><form id="f">
       <textarea id="url" rows="1" autocomplete="off" spellcheck="false" placeholder="Paste one or more site URLs, one per line" aria-label="Website URLs" required autofocus></textarea>
       <button id="impbtn" class="ghost sm" type="button" title="Import a page you saved from your browser with Ctrl+S" style="margin-top:3px"></button>
       <button id="optbtn" class="ghost sm" type="button" aria-expanded="false" aria-controls="optrow" style="margin-top:3px"></button>
@@ -844,7 +860,7 @@ body.rzing{cursor:col-resize;user-select:none}body.rzing iframe{pointer-events:n
 <dialog id="impdlg" aria-labelledby="imptitle"><div class="db">
   <h2 id="imptitle">Import a saved page</h2>
   <p class="meta">For sites that only show their content to a real browser (bot protection, or pages a script can't fetch). Let your own browser load the page, then save it:</p>
-  <ol class="impsteps"><li>Open the site in your normal browser and wait until it has fully loaded.</li><li>Press <kbd>Ctrl</kbd>+<kbd>S</kbd> and choose <b>Webpage, Complete</b> (or Single File).</li><li>Pick the saved file below, or let SiteCloner watch your Downloads folder.</li></ol>
+  <ol class="impsteps"><li>Open the site in your normal browser and wait until it has fully loaded.</li><li>Press <kbd>Ctrl</kbd>+<kbd>S</kbd> and choose <b>Webpage, Complete</b> (or Single File).</li><li>Pick the saved file below, or let fibrous-cloner watch your Downloads folder.</li></ol>
   <div class="improw"><button type="button" id="impbrowse" class="sm"></button><button type="button" id="impwatch" class="sm"></button></div>
   <p class="meta imppath" id="imppath">No file chosen</p>
   <label class="imp2"><span class="meta">Site address</span><input type="text" id="impurl" placeholder="https://example.com/" autocomplete="off" spellcheck="false"></label>
@@ -867,7 +883,7 @@ body.rzing{cursor:col-resize;user-select:none}body.rzing iframe{pointer-events:n
 <div id="toasts" role="status" aria-live="polite"></div>
 
 <script>
-const H={'Content-Type':'application/json','X-SiteCloner':'1'};
+const H={'Content-Type':'application/json','X-Fibrous-Sites':'1'};
 const post=(p,b)=>fetch(p,{method:'POST',headers:H,body:JSON.stringify(b)}).then(async r=>{const j=await r.json();if(!r.ok)throw new Error(j.error||'failed');return j});
 const $=s=>document.querySelector(s);
 const ls=k=>{try{return localStorage.getItem(k)}catch{return null}};
@@ -1046,7 +1062,9 @@ function cloneRow(c,depth){
 }
 function renderList(){
   const list=$('#list'),act=document.activeElement,keep=act&&act.dataset&&act.dataset.name&&list.contains(act)?act.dataset.name:null,st=list.scrollTop;
-  const v=visible();list.replaceChildren();renderTagbar();
+  $('#foldall').textContent=S.folders.some(f=>!S.collapsed.has(f))?'Collapse':'Expand';
+  const order=$('#sort').value;
+  const v=visible().sort((a,b)=>order==='size'?(b.frontend.bytes||0)-(a.frontend.bytes||0):order==='recent'?(Date.parse(b.createdAt)||0)-(Date.parse(a.createdAt)||0):a.name.localeCompare(b.name));list.replaceChildren();renderTagbar();
   $('#count').textContent=S.items.length?(v.length===S.items.length?plural(S.items.length,'clone'):v.length+' of '+S.items.length)+' · '+S.items.filter(c=>c.running).length+' running':'';
   const filtering=!!(S.q.trim()||S.filter!=='all'||S.tagFilter.size);
   const has=p=>v.some(c=>inTree(c,p));
@@ -1075,6 +1093,9 @@ $('#list').addEventListener('keydown',e=>{
 dropTarget($('#list'),'');dropTarget($('.navlabel'),'');
 $('#newfolder').append(icon('folderplus'));
 $('#newfolder').addEventListener('click',()=>{S.editing={kind:'new',parent:'',text:''};$('#app').dataset.view='list';renderList()});
+$('#sort').value=ls('sc.sort')||'name';
+$('#sort').addEventListener('change',()=>{sls('sc.sort',$('#sort').value);renderList()});
+$('#foldall').addEventListener('click',()=>{const collapse=S.folders.some(f=>!S.collapsed.has(f));S.collapsed=collapse?new Set(S.folders):new Set();sls('sc.collapsed',JSON.stringify([...S.collapsed]));renderList()});
 $('#q').addEventListener('input',e=>{S.q=e.target.value;renderList()});
 $('#seg').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;S.filter=b.dataset.f;for(const x of $('#seg').children)x.setAttribute('aria-pressed',String(x===b));renderList()});
 function select(name,openDetail){S.sel=name;sls('sc.sel',name||'');if(openDetail)$('#app').dataset.view='detail';lastSig='';render()}
@@ -1235,7 +1256,7 @@ function renderDetail(){
   const nAct=S.jobs.filter(j=>j.name===c.name&&(j.state==='queued'||j.state==='running')).length;
   for(const [id,lbl] of TABS)tabs.append(h('button',{type:'button',role:'tab',id:'tab-'+id,'aria-selected':String(S.tab===id),'aria-controls':'tp','tabindex':S.tab===id?'0':'-1',onclick:()=>setTab(id)},lbl,id==='activity'&&nAct?h('span',{class:'n'},' '+nAct):null));
   tabs.addEventListener('keydown',e=>{const i=TABS.findIndex(t=>t[0]===S.tab);let n=-1;if(e.key==='ArrowRight')n=(i+1)%TABS.length;else if(e.key==='ArrowLeft')n=(i-1+TABS.length)%TABS.length;else if(e.key==='Home')n=0;else if(e.key==='End')n=TABS.length-1;if(n<0)return;e.preventDefault();setTab(TABS[n][0]);const b=document.getElementById('tab-'+TABS[n][0]);if(b)b.focus()});
-  box.append(h('div',{class:'dtop'},dhead,tabs),h('div',{class:'panel'+(S.tab==='preview'?' wide':''),id:'tp',role:'tabpanel','aria-labelledby':'tab-'+S.tab},panelFor(c)));
+  box.append(h('div',{class:'dtop'},dhead,tabs),h('div',{class:'panel'+(S.tab==='preview'?' wide':S.tab==='overview'?' overview':''),id:'tp',role:'tabpanel','aria-labelledby':'tab-'+S.tab},panelFor(c)));
   box.scrollTop=st;
 }
 function render(){
@@ -1333,7 +1354,7 @@ function noticeFor(j){
   if(j.state==='done'&&(j.kind==='clone'||j.kind==='frontend')&&j.result&&j.result.suspect)
     addNotice({key:'s'+j.id,step:'check',name:j.name,url:j.url,reason:j.result.suspect});
   else if(j.state==='error'&&/bot protection|refused to give/i.test(j.error||''))
-    addNotice({key:'e'+j.id,step:'fix',name:null,url:j.url,text:j.url+' would not give its page to SiteCloner (its bot protection wants a real browser).'});
+    addNotice({key:'e'+j.id,step:'fix',name:null,url:j.url,text:j.url+' would not give its page to fibrous-cloner (its bot protection wants a real browser).'});
 }
 function noticeFix(c){S.notices.unshift({key:'m'+Date.now(),step:'fix',name:c.name,url:siteOf(c),text:c.name+' may be empty or wrong.'});renderNotice()}
 async function runClone(name){try{await post('/api/start',{name})}catch(e){toast(e.message,'err')}lastSig='';await loadClones()}
@@ -1348,7 +1369,7 @@ function renderNotice(){
         btn('sm primary','x','Yes, clone failed',{onclick:()=>{n.step='fix';n.text=n.name+' did not copy properly.';renderNotice()}}),
         btn('sm ghost','','Nevermind',{onclick:next})));
   }else{
-    box.append(icon('upload'),h('div',{class:'ntext'},h('b',{},n.text+' '),h('span',{},'Download its HTML/CSS from your own browser instead? SiteCloner opens the site, you press Ctrl+S, and it imports the saved page'+(n.name?' into '+n.name:'')+'.')),
+    box.append(icon('upload'),h('div',{class:'ntext'},h('b',{},n.text+' '),h('span',{},'Download its HTML/CSS from your own browser instead? fibrous-cloner opens the site, you press Ctrl+S, and it imports the saved page'+(n.name?' into '+n.name:'')+'.')),
       h('div',{class:'nbtns'},
         btn('sm primary','dl','Yes, download HTML/CSS',{onclick:()=>{next();openImport({url:n.url,into:n.name||'',repair:!!n.name,watch:true,open:true})}}),
         btn('sm ghost','','Nevermind',{onclick:next})));
@@ -1402,9 +1423,9 @@ $('#impgo').addEventListener('click',async()=>{
 });
 const es=new EventSource('/api/events');
 $('#quit').addEventListener('click',async()=>{
-  const ok=await ask('Quit SiteCloner?','Any copies running on localhost will stop.'+(activeJobs?' '+plural(activeJobs,'unfinished copy')+' in the queue will be discarded.':''),'Quit',{normal:true});if(!ok)return;
+  const ok=await ask('Quit fibrous-cloner?','Any copies running on localhost will stop.'+(activeJobs?' '+plural(activeJobs,'unfinished copy')+' in the queue will be discarded.':''),'Quit',{normal:true});if(!ok)return;
   es.close();try{await post('/api/quit',{})}catch{}
-  document.body.replaceChildren(h('div',{class:'empty',style:'height:100vh'},h('b',{},'SiteCloner stopped'),h('span',{},'You can close this window.')));
+  document.body.replaceChildren(h('div',{class:'empty',style:'height:100vh'},h('b',{},'fibrous-cloner stopped'),h('span',{},'You can close this window.')));
   setTimeout(()=>window.close(),300);
 });
 document.addEventListener('keydown',e=>{

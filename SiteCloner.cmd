@@ -1,5 +1,3 @@
 @echo off
-title SiteCloner
-echo Starting SiteCloner control panel... (close this window to stop it)
-node "%~dp0ui.mjs"
-pause
+rem Compatibility launcher for installations using the original filename.
+call "%~dp0FibrousSites.cmd" %*
