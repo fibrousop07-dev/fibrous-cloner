@@ -68,7 +68,7 @@ node sitecloner.mjs --help
 
 JavaScript pages are rendered automatically using an installed Chrome, Edge or Chromium browser. Failed plain downloads also try this path. The app waits for rendering, scrolls to load common lazy assets, and imports the browser snapshot with its loaded images, styles and fonts. No Ctrl+S, file picker or visible browser window is needed.
 
-Choose **Recapture headlessly** in Preview to refresh a broken copy. The job appears in the normal queue, supports cancellation and preserves existing files if capture fails. The browser uses a temporary profile, not your personal sessions. To select a nonstandard browser location, set `FIBROUS_CLONER_BROWSER` to its executable path.
+Choose **Repair automatically** in Preview to refresh a broken copy. A refused browser capture now falls back to public source HTML and its assets, labelled as a partial copy rather than a completed render. Redirect-only source pages are followed, and parked-domain sale pages are reported instead of silently saved as the requested site. The job appears in the normal queue, supports cancellation and preserves existing files if capture fails. The browser uses a temporary profile, not your personal sessions. To select a nonstandard browser location, set `FIBROUS_CLONER_BROWSER` to its executable path.
 
 Rendered captures preserve the page's static appearance; interactive features and uncaptured resources can remain incomplete. A CAPTCHA, login, HTTP denial or regional restriction can still prevent capture. If no supported browser is installed, a successful plain download is retained and the browser error is shown.
 

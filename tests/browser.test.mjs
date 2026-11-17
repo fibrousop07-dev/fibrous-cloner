@@ -5,8 +5,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { capturePage, findCaptureBrowser } from '../browser-capture.mjs';
-import { captureClone, cloneWithBrowser } from '../browser-clone.mjs';
-import { normalizeUrl, crawl } from '../sitecloner.mjs';
+import { captureClone, cloneWithBrowser, repairClone } from '../browser-clone.mjs';
+import { normalizeUrl, crawl, downloadHome } from '../sitecloner.mjs';
 
 let browser;
 try { browser = findCaptureBrowser(); } catch { /* Browser integration tests report why they are skipped. */ }
@@ -15,6 +15,14 @@ async function fixture(run) {
   const server = http.createServer((req, res) => {
     if (req.url === '/style.css') { res.setHeader('content-type', 'text/css'); return res.end('h1 { color: rgb(18, 110, 90) }'); }
     if (req.url === '/image.svg') { res.setHeader('content-type', 'image/svg+xml'); return res.end('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="teal"/></svg>'); }
+    if (req.url === '/styles/main.css') { res.setHeader('content-type', 'text/css'); return res.end('body { background: url(../image.svg) }'); }
+    if (req.url === '/redirect-only') { res.setHeader('content-type', 'text/html'); return res.end('<head><script>window.location.href="/native-only"</script></head>'); }
+    if (req.url === '/loop') { res.setHeader('content-type', 'text/html'); return res.end('<head><script>window.location.href="/loop"</script></head>'); }
+    if (req.url === '/native-only') {
+      res.setHeader('content-type', 'text/html');
+      if (/HeadlessChrome/.test(req.headers['user-agent'] || '')) { res.statusCode = 403; return res.end('<title>Forbidden</title>'); }
+      return res.end('<html><head><title>Native fixture</title><link rel="stylesheet" href="styles/main.css"></head><body><h1>Usable public source homepage</h1><img src="/image.svg"></body></html>');
+    }
     if (req.url === '/denied') { res.statusCode = 403; res.setHeader('content-type', 'text/html'); return res.end('<title>Forbidden</title><p>No access</p>'); }
     if (req.url !== '/' && req.url !== '/browser-only') { res.statusCode = 404; return res.end(); }
     if (req.url === '/browser-only' && !/HeadlessChrome/.test(req.headers['user-agent'] || '')) { res.statusCode = 403; return res.end('Needs a browser'); }
@@ -37,6 +45,47 @@ test('URLs pasted with escaped punctuation are normalized', () => {
   assert.equal(normalizeUrl('https://example.com/a?x=1'), 'https://example.com/a?x=1');
 });
 
+test('native recovery follows literal redirects and rejects redirect loops', async () => {
+  await fixture(async url => {
+    const page = await downloadHome(url + '/redirect-only');
+    assert.equal(page.url, url + '/native-only');
+    assert.match(page.data, /Usable public source homepage/);
+    await assert.rejects(downloadHome(url + '/loop'), /redirect loop/);
+  });
+});
+
+test('a parked-domain redirect is reported instead of saved as the requested site', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, status: 200, url: 'https://forsale.godaddy.com/forsale/photographer.example', headers: new Headers({ 'content-type': 'text/html' }), arrayBuffer: async () => Buffer.from('<h1>This domain is for sale</h1>') });
+  try {
+    await assert.rejects(downloadHome('https://photographer.example/'), /parked domain sale page/);
+    await assert.rejects(crawl('https://photographer.example/', 'unused', 10, () => {}), /parked domain sale page/);
+  }
+  finally { globalThis.fetch = original; }
+});
+
+test('repair falls back to native source with CSS and images when the browser is refused', { skip: !browser && 'Chrome/Edge/Chromium is not installed' }, async () => {
+  await fixture(async (url, temp) => {
+    const out = path.join(temp, 'native-repair');
+    const result = await repairClone(url + '/redirect-only', out, { settleMs: 100 });
+    assert.equal(result.rendered, false);
+    assert.equal(result.partial, true);
+    assert.match(result.browserError, /HTTP 403/);
+    const metadata = JSON.parse(await fs.readFile(path.join(out, '_sitecloner.json'), 'utf8'));
+    assert.equal(metadata.captureStatus, 'partial');
+    assert.match(metadata.captureWarning, /HTTP 403/);
+    const html = await fs.readFile(path.join(out, 'index.html'), 'utf8');
+    assert.match(html, /Usable public source homepage/);
+    assert.match(html, /href="\/styles\/main.css"/);
+    assert.match(await fs.readFile(path.join(out, 'styles/main.css'), 'utf8'), /url\(\/image.svg\)/);
+    assert.match(await fs.readFile(path.join(out, 'image.svg'), 'utf8'), /<svg/);
+    const queuedOut = path.join(temp, 'queued-source');
+    const queued = await cloneWithBrowser(url + '/redirect-only', queuedOut, 10, () => {}, undefined, { snapshotApi: false });
+    assert.equal(queued.partial, true);
+    assert.match(await fs.readFile(path.join(queuedOut, 'index.html'), 'utf8'), /Usable public source homepage/);
+  });
+});
+
 test('a regional redirect gets a localhost home page with the correct relative base', async () => {
   const server = http.createServer((req, res) => {
     if (req.url === '/') { res.writeHead(302, { location: '/en/landing' }); return res.end(); }
@@ -50,6 +99,21 @@ test('a regional redirect gets a localhost home page with the correct relative b
     const home = await fs.readFile(path.join(temp, 'index.html'), 'utf8');
     assert.match(home, /Regional homepage/);
     assert.match(home, /<base href="\/en\/landing">/);
+  } finally { server.closeAllConnections?.(); await new Promise(resolve => server.close(resolve)); await fs.rm(temp, { recursive: true, force: true }); }
+});
+
+test('crawling the origin root does not replace a requested subpage', async () => {
+  const server = http.createServer((req, res) => {
+    if (req.url === '/' || req.url === '/journal/') { res.setHeader('content-type', 'text/html'); return res.end('<html><head><title>Fixture</title></head><body>' + (req.url === '/' ? 'Other root page' : 'Requested journal page') + '</body></html>'); }
+    res.statusCode = 404; res.end();
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'fibrous-subpage-test-'));
+  try {
+    await crawl(`http://127.0.0.1:${server.address().port}/journal/`, temp, 10, () => {}, undefined, { snapshotApi: false });
+    const home = await fs.readFile(path.join(temp, 'index.html'), 'utf8');
+    assert.match(home, /Requested journal page/);
+    assert.doesNotMatch(home, /Other root page/);
   } finally { server.closeAllConnections?.(); await new Promise(resolve => server.close(resolve)); await fs.rm(temp, { recursive: true, force: true }); }
 });
 

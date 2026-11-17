@@ -84,6 +84,7 @@ export async function capturePage(url, { signal, timeoutMs = 60000, settleMs = 1
     const info = state.result.value;
     if (documentStatus >= 400) throw new Error('The browser received HTTP ' + documentStatus + '; the page was not imported');
     if (!info || !/^https?:/.test(info.url)) throw new Error('The browser did not load a web page');
+    if (new URL(info.url).hostname === 'forsale.godaddy.com' && parsed.hostname !== 'forsale.godaddy.com') throw new Error('This address redirects to a parked domain sale page, not the requested website');
     if (/^(just a moment|access denied|attention required|verify you are human|vercel security checkpoint|security check|404|403)/i.test(info.title.trim()) || /verify (?:that )?you are human|performing security verification/i.test(info.text)) throw new Error('The site still requires an interactive verification; headless capture could not load its content');
     if (!info.text.trim() && !info.media) throw new Error('The browser loaded an empty page; it was not imported');
     // MHTML stores DOM and resources, not canvas pixels. Bake a bounded number of

@@ -1,6 +1,6 @@
 // fibrous-cloner control panel: paste a URL, press Clone, then press "Start localhost".
 // Run: FibrousSites.cmd  (or: node ui.mjs [--no-open] [--port 4200])
-import { cloneWithBrowser, captureClone } from './browser-clone.mjs';
+import { cloneWithBrowser, repairClone } from './browser-clone.mjs';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -234,7 +234,7 @@ function listClones() {
     if (!meta) continue;
     const r = running.get(c.name);
     out.push({
-      name: c.name, origin: meta.origin || '', createdAt: meta.createdAt || '',
+      name: c.name, origin: meta.origin || '', createdAt: meta.createdAt || '', captureStatus: meta.captureStatus || '', captureWarning: meta.captureWarning || '',
       frontend: frontendStats(dir),               // the website files
       backend: backendStats(dir),                 // saved public API answers (null = none saved)
       endpointsChecked: !!meta.endpoints || !!meta.backend,
@@ -313,12 +313,12 @@ function runJob(job) {
     return;
   }
   const layerOnly = job.kind !== 'clone'; // existing clone: re-download website files only, keep the saved backend data
-  const download = job.kind === 'browser' ? (url, dir, max, progress, signal, opts) => captureClone(url, dir, { signal, onPhase: opts.onPhase }) : cloneWithBrowser;
+  const download = job.kind === 'browser' ? (url, dir, max, progress, signal, opts) => repairClone(url, dir, { signal, onPhase: opts.onPhase }) : cloneWithBrowser;
   download(job.url, out, 100000, (n, q) => { job.saved = n; job.queued = q; }, job.controller.signal, { snapshotApi: layerOnly ? false : job.api, onPhase: (p) => { job.phase = p; } })
     .then(async (r) => {
       if (r.saved === 0) throw new Error('nothing was saved');
       job.saved = r.saved;
-      job.result = { rendered: !!r.rendered, browserError: r.browserError || null, saved: r.saved, api: r.apiCalls, snapshot: r.apiSnap ? r.apiSnap.captured : 0, gated: r.apiSnap ? r.apiSnap.gated : [], uncaptured: r.apiSnap ? r.apiSnap.missing : [], failed: r.failed.length, spa: r.spaRoutes.length };
+      job.result = { rendered: !!r.rendered, partial: !!r.partial, browserError: r.browserError || null, saved: r.saved, api: r.apiCalls, snapshot: r.apiSnap ? r.apiSnap.captured : 0, gated: r.apiSnap ? r.apiSnap.gated : [], uncaptured: r.apiSnap ? r.apiSnap.missing : [], failed: r.failed.length, spa: r.spaRoutes.length };
       job.result.suspect = r.browserError || pageLooksEmpty(out); // asks the user to double-check pages that came back (almost) empty
       job.state = 'done';
       job.finishedAt = Date.now();
@@ -1167,8 +1167,9 @@ function jobText(j,pos){
   const gate=(j.result&&j.result.gated?j.result.gated.length:0),miss=(j.result&&j.result.uncaptured?j.result.uncaptured.length:0);
   const tail=(gate?' · '+gate+' need a login':'')+(miss?' · '+miss+" can't be copied":'');
   if(j.state==='queued')return 'Waiting for a free slot'+(pos?' (#'+pos+' in line)':'')+(j.kind==='clone'?' · will be saved as '+j.name:'');
-  if(j.state==='running')return j.kind==='backend'?"Reading the site's code for API calls and saving their public answers…":j.phase==='browser'?'Rendering and saving the page in a headless browser…':j.phase==='api'?j.saved+' files saved · now saving backend data…':j.saved+' files saved · '+j.queued+' still to check';
+  if(j.state==='running')return j.kind==='backend'?"Reading the site's code for API calls and saving their public answers…":j.phase==='source'?'Saving public HTML and assets after the browser attempt…':j.phase==='browser'?'Rendering and saving the page in a headless browser…':j.phase==='api'?j.saved+' files saved · now saving backend data…':j.saved+' files saved · '+j.queued+' still to check';
   if(j.state==='done'){
+    if(j.result.partial)return plural(j.result.saved,'file')+' saved · partial source copy; rendered capture unavailable';
     if(j.kind==='backend')return j.result.none?'No API calls found, so no backend data to download.':plural(j.result.snapshot,'public answer')+' saved'+tail;
     if(j.kind==='frontend')return plural(j.result.saved,'file')+' saved';
     let m=plural(j.result.saved,'file')+' saved'+(j.auto?' · localhost started':'');if(j.api&&j.result.snapshot)m+=' · backend: '+plural(j.result.snapshot,'public answer')+tail;return m;
@@ -1176,6 +1177,7 @@ function jobText(j,pos){
   if(j.state==='error')return j.error;
   return j.kind==='clone'?'Stopped before finishing, nothing was kept.':'Stopped. What you already had is unchanged.';
 }
+const jobChip=j=>j.state==='done'&&j.result&&j.result.partial?['Partial','q']:JCHIP[j.state]||[j.state,''];
 const JCHIP={queued:['Queued','q'],running:['Copying','on'],done:['Done','done'],error:['Failed','err'],cancelled:['Cancelled','']};
 const jobTitle=j=>j.kind==='backend'?'Backend data · '+j.name:j.kind==='frontend'?'Frontend files · '+j.name:j.url;
 
@@ -1201,7 +1203,7 @@ function previewPanel(c){
     btn('sm icon','refresh','',{'aria-label':'Reload',title:'Reload',onclick:()=>{frame.src=url}}),
     btn('sm icon','globe','',{'aria-label':'Back to the home page',title:'Back to the home page',onclick:()=>{frame.src=url}}),
     h('input',{type:'text',readOnly:true,value:url,'aria-label':'Address'}),dev,
-    btn('sm ghost','upload','Recapture headlessly',{title:'Automatically render and download the page in a headless browser',onclick:()=>noticeFix(c)}),
+    btn('sm ghost','upload','Repair automatically',{title:'Try browser rendering, then public HTML and assets automatically',onclick:()=>noticeFix(c)}),
     btn('sm','ext','Open in browser',{onclick:()=>window.open(url,'_blank')})),
     h('div',{class:'pvstage'},wrap)];
 }
@@ -1229,13 +1231,13 @@ function panelFor(c){
   if(S.tab==='activity'){
     const js=S.jobs.filter(j=>j.name===c.name),out=[];const ls0=liveStats(c);if(ls0)out.push(ls0);
     out.push(h('section',{class:'card'},h('h3',{},h('span',{class:'t'},icon('layers'),'Recent activity')),
-      js.length?h('div',{style:'display:grid;gap:10px'},js.map(j=>{const[l,cl]=JCHIP[j.state]||[j.state,''];return h('div',{style:'display:grid;gap:4px'},h('div',{class:'rowline',style:'justify-content:space-between'},h('b',{style:'font-weight:600'},jobTitle(j)),h('span',{class:'chip '+cl},j.state==='running'&&j.kind==='backend'?'Downloading':l)),h('div',{class:'meta'},jobText(j,0)))})):h('div',{class:'meta'},'Nothing in the queue for this clone. Finished copies clear themselves after a few seconds.')));
+      js.length?h('div',{style:'display:grid;gap:10px'},js.map(j=>{const[l,cl]=jobChip(j);return h('div',{style:'display:grid;gap:4px'},h('div',{class:'rowline',style:'justify-content:space-between'},h('b',{style:'font-weight:600'},jobTitle(j)),h('span',{class:'chip '+cl},j.state==='running'&&j.kind==='backend'?'Downloading':l)),h('div',{class:'meta'},jobText(j,0)))})):h('div',{class:'meta'},'Nothing in the queue for this clone. Finished copies clear themselves after a few seconds.')));
     return out;
   }
   const out=[h('div',{class:'grid2'},layerCard(c,'fe'),layerCard(c,'be'))];
   const l=liveStats(c);if(l)out.push(l);
   out.push(organizeCard(c));
-  out.push(h('section',{class:'card'},h('h3',{},h('span',{class:'t'},icon('info'),'Details')),kv(['Source',c.origin||c.name],['Copied',fmtD(c.createdAt)||'unknown'],['Backend learning',be?(c.learn?'On':'Off'):'No backend data'])));
+  out.push(h('section',{class:'card'},h('h3',{},h('span',{class:'t'},icon('info'),'Details')),kv(['Source',c.origin||c.name],['Capture',c.captureStatus==='partial'?'Partial source copy (rendering unavailable)':c.captureStatus==='rendered'?'Browser-rendered snapshot':'Public source files'],['Copied',fmtD(c.createdAt)||'unknown'],['Backend learning',be?(c.learn?'On':'Off'):'No backend data'])));
   return out;
 }
 const TABS=[['overview','Overview'],['preview','Preview'],['frontend','Frontend'],['backend','Backend data'],['activity','Activity']];
@@ -1284,7 +1286,7 @@ const cards=new Map(),prevState=new Map();let trayOpen=false;
 function buildJob(j){const p={url:h('span',{class:'jurl'}),chip:h('span',{class:'chip'}),meta:h('div',{class:'meta'}),bar:h('div',{class:'bar'},h('i')),btns:h('div',{class:'rowline'})};return{card:h('div',{class:'job'},h('div',{class:'jt'},p.url,p.chip),p.meta,p.bar,p.btns),state:null,p}}
 function updateJob(j,pos){
   let c=cards.get(j.id);if(!c){c=buildJob(j);cards.set(j.id,c)}
-  const [l0,cl]=JCHIP[j.state]||[j.state,''];
+  const [l0,cl]=jobChip(j);
   c.p.chip.textContent=j.state==='running'&&j.kind==='backend'?'Downloading':l0;c.p.chip.className='chip '+cl;
   c.p.bar.hidden=j.state!=='running';c.p.url.textContent=jobTitle(j);c.p.meta.textContent=jobText(j,pos);
   if(c.state!==j.state){c.state=j.state;c.p.btns.replaceChildren();
@@ -1359,7 +1361,7 @@ function noticeFor(j){
   else if(j.state==='error'&&/bot protection|refused to give/i.test(j.error||''))
     addNotice({key:'e'+j.id,step:'fix',name:null,url:j.url,text:j.url+' would not give its page to fibrous-cloner (its bot protection wants a real browser).'});
 }
-async function noticeFix(c){await layer(c.name,'capture-browser');toast('Headless capture queued. The page and assets will be saved automatically.')}
+async function noticeFix(c){await layer(c.name,'capture-browser')}
 async function runClone(name){try{await post('/api/start',{name})}catch(e){toast(e.message,'err')}lastSig='';await loadClones()}
 function renderNotice(){
   const box=$('#notice'),n=S.notices[0];box.replaceChildren();box.hidden=!n;if(!n)return;

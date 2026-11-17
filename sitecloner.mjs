@@ -257,8 +257,44 @@ function summarizeEntries(entries, idPrefixes = []) {
 }
 
 // ---------- crawl ----------
+function checkPageDestination(requested, resolved) {
+  if (new URL(resolved).hostname === 'forsale.godaddy.com' && new URL(normalizeUrl(requested)).hostname !== 'forsale.godaddy.com') throw Object.assign(new Error('This address redirects to a parked domain sale page, not the requested website'), { code: 'PARKED_DOMAIN' });
+}
+
+// A lightweight homepage recovery path; follows only literal redirects, never executes page JS.
+async function downloadHome(startUrl, signal) {
+  let url = normalizeUrl(startUrl);
+  const seen = new Set();
+  for (let hop = 0; hop < 6; hop++) {
+    signal?.throwIfAborted();
+    if (seen.has(url)) throw new Error('Homepage redirect loop');
+    seen.add(url);
+    const response = await get(url, { Accept: 'text/html,application/xhtml+xml' }, signal);
+    if (!response.ok || response.status === 202) throw new Error('Native homepage request received HTTP ' + response.status);
+    checkPageDestination(startUrl, response.url);
+    const html = response.buf.toString('utf8');
+    const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1] || '';
+    if (/^(just a moment|access denied|attention required|vercel security checkpoint|security check)/i.test(title.trim())) throw new Error('Native request returned a verification page');
+    const text = html.replace(/<(script|style|head)\b[\s\S]*?<\/\1>/gi, '').replace(/<[^>]+>/g, '').trim();
+    if (text.length < 40 && !/<(?:img|svg|canvas|video)\b/i.test(html)) {
+      const target = /(?:window\.)?location(?:\.href)?\s*=\s*["']([^"']+)["']/i.exec(html)?.[1]
+        || /(?:window\.)?location\.(?:replace|assign)\(\s*["']([^"']+)["']/i.exec(html)?.[1]
+        || /<meta\b[^>]*content=["'][^"']*?\burl\s*=\s*([^"'>]+)["']/i.exec(html)?.[1];
+      if (target) {
+        const next = new URL(target, response.url);
+        if (!/^https?:$/.test(next.protocol)) throw new Error('Homepage redirects to an unsupported address');
+        url = next.href; continue;
+      }
+    }
+    if (!text && !/<(?:img|svg|canvas|video)\b/i.test(html)) throw new Error('Native homepage contains no usable page content');
+    return { data: html, url: response.url };
+  }
+  throw new Error('Too many homepage redirects');
+}
+
 async function crawl(startUrl, out, maxFiles, onProgress, signal, opts = {}) {
   const first = await get(startUrl, {}, signal);
+  checkPageDestination(startUrl, first.url);
   // Bot protection often answers a script with 202 and an empty page (a challenge only a real browser can pass).
   // Saving that would leave a blank clone, so stop with a clear message instead.
   if (!first.ok || first.status === 202 || first.buf.length === 0) {
@@ -282,6 +318,7 @@ async function crawl(startUrl, out, maxFiles, onProgress, signal, opts = {}) {
   const apiMap = new Map(); // "/api/x" -> { names: parameter names seen next to it in the page code }
   const spaRoutes = new Set();
   let homeHash = null;
+  let hasEntryAlias = false;
 
   const enqueue = (raw, from) => {
     if (!raw) return;
@@ -334,6 +371,9 @@ async function crawl(startUrl, out, maxFiles, onProgress, signal, opts = {}) {
     if (firstPage) homeHash = sha(r.buf);
     else if (isHtml && !ext && fu.pathname !== '/' && sha(r.buf) === homeHash) { spaRoutes.add(fu.pathname); return; }
     const file = path.join(out, toRel(fu.pathname, isHtml));
+    // The requested subpage/region is the clone's entry page. A later crawl of
+    // the origin root must not overwrite that localhost home-page alias.
+    if (hasEntryAlias && !firstPage && file === path.join(out, 'index.html')) return;
     if (!path.resolve(file).startsWith(path.resolve(out))) return;
     const home = path.join(out, 'index.html');
     const homeCopy = firstPage && file !== home ? Buffer.from(r.buf.toString('utf8').replace(/<base\b[^>]*>/gi, '').replace(/<head\b[^>]*>/i, m => m + '<base href="' + fu.pathname.replace(/"/g, '%22') + '">')) : null;
@@ -344,7 +384,7 @@ async function crawl(startUrl, out, maxFiles, onProgress, signal, opts = {}) {
     sizes.set(file, r.buf.length); bytes = nb;
     saved.add(file);
     // A language/region redirect still needs a home page for the localhost server.
-    if (homeCopy) { fs.writeFileSync(home, homeCopy); sizes.set(home, homeCopy.length); saved.add(home); }
+    if (homeCopy) { fs.writeFileSync(home, homeCopy); sizes.set(home, homeCopy.length); saved.add(home); hasEntryAlias = true; }
     recent.push({ p: path.relative(out, file).split(path.sep).join('/'), s: r.buf.length });
     if (/text|javascript|json|xml|html|css/.test(r.type) && r.buf.length < 64e6) scan(r.buf.toString('utf8'), r.type, fu.href);
   };
@@ -599,11 +639,12 @@ function importSaved({ file, url, outDir, stripScripts = true, existing = false,
 // After a saved page is imported, fetch what it still points at on the web (fonts, images, stylesheets, files the browser did not
 // save) so the clone also works offline. Same-site files are saved at their own paths; files on other sites go under _ext/<host>/
 // and the page is re-linked to them. Everything is best effort: whatever cannot be fetched keeps its original link.
-async function fetchMissingAssets(dir, pageUrl, { stripScripts = true, max = 3000, deadlineMs = 300000 } = {}) {
+async function fetchMissingAssets(dir, pageUrl, { stripScripts = true, max = 3000, deadlineMs = 300000, signal } = {}) {
   const base = new URL(pageUrl), siteKey = stripWww(base.hostname);
   const end = Date.now() + deadlineMs;
   let fetched = 0, failed = 0;
   const tried = new Set();
+  const sourceUrls = new Map();
   const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const localFor = (u) => (stripWww(u.hostname) === siteKey ? toRel(u.pathname, false) : path.join('_ext', segSafe(u.hostname), toRel(u.pathname, false)));
   const refsIn = (text, isHtml) => {
@@ -611,7 +652,7 @@ async function fetchMissingAssets(dir, pageUrl, { stripScripts = true, max = 300
     const add = (raw) => {
       raw = String(raw || '').trim().replace(/&amp;/g, '&');
       if (!raw || /^(data:|blob:|mailto:|tel:|javascript:|#)/i.test(raw)) return;
-      if (/^(https?:)?\/\//i.test(raw) || (raw.startsWith('/') && !raw.startsWith('//'))) out.add(raw); // saved pages already link their own files relatively
+      if (/^(https?:)?\/\//i.test(raw) || !/^[a-z][a-z\d+.-]*:/i.test(raw)) out.add(raw);
     };
     for (const m of text.matchAll(/url\(\s*["']?([^"')]+)["']?\s*\)/gi)) add(m[1]);
     for (const m of text.matchAll(/@import\s+["']([^"']+)["']/gi)) add(m[1]);
@@ -624,37 +665,41 @@ async function fetchMissingAssets(dir, pageUrl, { stripScripts = true, max = 300
     return out;
   };
   for (let round = 0; round < 3 && fetched < max && Date.now() < end; round++) {
+    signal?.throwIfAborted();
+    const rewrites = [];
     const files = [];
     walkFiles(dir, (f) => { if (/\.(html?|css)$/i.test(f)) files.push(f); });
     const want = new Map(); // original text -> absolute URL
     for (const f of files) {
       const text = fs.readFileSync(f, 'utf8');
       for (const raw of refsIn(text, /\.html?$/i.test(f))) {
-        let abs; try { abs = new URL(raw.startsWith('//') ? base.protocol + raw : raw, base); } catch { continue; }
+        let abs; try { abs = new URL(raw.startsWith('//') ? base.protocol + raw : raw, sourceUrls.get(f) || base); } catch { continue; }
         if (!/^https?:$/.test(abs.protocol)) continue;
         if (stripScripts && /\.m?js$/i.test(abs.pathname)) continue;
-        if (fs.existsSync(path.join(dir, localFor(abs))) || tried.has(abs.href)) continue;
+        if (fs.existsSync(path.join(dir, localFor(abs)))) { rewrites.push([raw, '/' + localFor(abs).split(path.sep).join('/')]); continue; }
+        if (tried.has(abs.href)) continue;
         want.set(raw, abs);
       }
     }
-    if (!want.size) break;
-    const rewrites = [];
+    if (!want.size && !rewrites.length) break;
     const queue = [...want.entries()];
     await Promise.all(Array.from({ length: 6 }, async () => {
       while (queue.length && fetched < max && Date.now() < end) {
+        signal?.throwIfAborted();
         const [raw, abs] = queue.shift();
         if (tried.has(abs.href)) continue;
         tried.add(abs.href);
         try {
-          const r = await get(abs.href);
+          const r = await get(abs.href, {}, signal);
           if (!r.ok || r.status === 202 || r.buf.length === 0 || r.buf.length > 25e6 || (/html/.test(r.type) && !/\.html?$/i.test(abs.pathname))) { failed++; continue; } // an HTML answer to an asset request is an error page
           const rel = localFor(abs), f = path.join(dir, rel);
           if (!path.resolve(f).startsWith(path.resolve(dir) + path.sep)) { failed++; continue; }
           fs.mkdirSync(path.dirname(f), { recursive: true });
           fs.writeFileSync(f, r.buf);
+          sourceUrls.set(f, abs.href);
           fetched++;
-          if (stripWww(abs.hostname) !== siteKey) rewrites.push([raw, '/' + rel.split(path.sep).join('/')]);
-        } catch { failed++; }
+          rewrites.push([raw, '/' + rel.split(path.sep).join('/')]);
+        } catch (e) { if (signal?.aborted) throw e; failed++; }
       }
     }));
     if (rewrites.length) { // point the page and stylesheets at the local copies of other sites' files
@@ -862,6 +907,7 @@ async function main() {
   const { cloneWithBrowser } = await import('./browser-clone.mjs');
   const r = await cloneWithBrowser(url, out, Number(flags.max) || 100000, null, null, { snapshotApi: !flags['no-api'] });
   console.log(`  ${green('Saved')} ${r.saved} files from ${r.meta.origin}`);
+  if (r.partial) console.warn(yellow('  Partial source copy: rendered capture was unavailable. ' + (r.browserError || '')));
   if (r.apiSnap) console.log(`  ${green('Backend data:')} ${r.apiSnap.captured} public answer(s) saved${r.apiSnap.gated.length ? dim(' · need a login: ' + r.apiSnap.gated.join(' ')) : ''}${r.apiSnap.missing.length ? dim(' · not capturable: ' + r.apiSnap.missing.map((m) => m.path).join(' ')) : ''}`);
   if (r.spaRoutes.length) console.log(`  ${dim('client-side routes detected (served via index.html):')} ${r.spaRoutes.length}`);
   if (r.apiCalls.length) console.log(`  ${yellow('Backend calls found (not cloned, will be stubbed):')} ${r.apiCalls.slice(0, 10).join(' ')}`);
@@ -872,7 +918,7 @@ async function main() {
   if (res !== 'serve') process.exit(0);
 }
 
-export { envOpt, setFetchLimits, fetchMissingAssets, inspectSaved, importSaved, isSavedPage, crawl, listen, normalizeUrl, openBrowser, CLONES, META, readMeta, writeMeta, refreshApi, frontendStats, backendStats, deleteFrontend, deleteBackend };
+export { envOpt, setFetchLimits, fetchMissingAssets, downloadHome, inspectSaved, importSaved, isSavedPage, crawl, listen, normalizeUrl, openBrowser, CLONES, META, readMeta, writeMeta, refreshApi, frontendStats, backendStats, deleteFrontend, deleteBackend };
 
 // run the CLI only when executed directly (ui.mjs imports this file as a library)
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
