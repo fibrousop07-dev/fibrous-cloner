@@ -10,7 +10,7 @@
     "start": "node ui.mjs",
     "installer": "powershell -ExecutionPolicy Bypass -File installer/build.ps1",
     "check": "node scripts/check.mjs",
-    "test": "node --test tests/cloner.test.mjs"
+    "test": "node --test tests/cloner.test.mjs tests/browser.test.mjs"
   },
   "engines": {
     "node": ">=18"

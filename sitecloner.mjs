@@ -25,7 +25,7 @@ function envOpt(name) {
 const CLONES = envOpt('CLONES') ? path.resolve(envOpt('CLONES')) : path.join(HERE, 'clones');
 // clone bookkeeping files keep their _sitecloner* names so existing clones keep working
 const META = '_sitecloner.json';
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36';
+// Use Node's native HTTP identity; an obsolete impersonated Chrome UA causes some CDNs to refuse valid downloads.
 const ASSET_EXT = 'png|jpe?g|gif|webp|avif|svg|ico|css|js|mjs|json|woff2?|ttf|otf|eot|mp4|webm|mp3|ogg|wav|glb|gltf|bin|txt|xml|webmanifest|wasm|hdr|ktx2|map';
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.htm': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -72,11 +72,17 @@ function toRel(pn, isHtml) {
 let urlGuard = null, maxBody = 0;
 function setFetchLimits(opts = {}) { urlGuard = opts.urlGuard || null; maxBody = opts.maxBody || 0; }
 
-async function get(u, extra = {}) {
+async function get(u, extra = {}, signal) {
+  signal?.throwIfAborted();
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  signal?.addEventListener('abort', abort, { once: true });
+  const timer = setTimeout(abort, 30000);
+  try {
   let url = u, res;
   for (let hop = 0; ; hop++) {
     if (urlGuard) await urlGuard(new URL(url));
-    res = await fetch(url, { headers: { 'User-Agent': UA, Accept: '*/*', ...extra }, redirect: urlGuard ? 'manual' : 'follow', signal: AbortSignal.timeout(120000) });
+    res = await fetch(url, { headers: { Accept: '*/*', ...extra }, redirect: urlGuard ? 'manual' : 'follow', signal: controller.signal });
     if (urlGuard && res.status >= 300 && res.status < 400 && res.headers.get('location')) {
       if (hop >= 5) throw new Error('too many redirects');
       url = new URL(res.headers.get('location'), url).href;
@@ -88,6 +94,7 @@ async function get(u, extra = {}) {
   const buf = Buffer.from(await res.arrayBuffer());
   if (maxBody && buf.length > maxBody) throw new Error('response too large');
   return { url: urlGuard ? url : res.url, ok: res.ok, status: res.status, type: res.headers.get('content-type') || '', waf: res.headers.get('x-amzn-waf-action') || '', buf };
+  } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
 }
 
 function openBrowser(url) {
@@ -251,7 +258,7 @@ function summarizeEntries(entries, idPrefixes = []) {
 
 // ---------- crawl ----------
 async function crawl(startUrl, out, maxFiles, onProgress, signal, opts = {}) {
-  const first = await get(startUrl);
+  const first = await get(startUrl, {}, signal);
   // Bot protection often answers a script with 202 and an empty page (a challenge only a real browser can pass).
   // Saving that would leave a blank clone, so stop with a clear message instead.
   if (!first.ok || first.status === 202 || first.buf.length === 0) {
@@ -279,6 +286,8 @@ async function crawl(startUrl, out, maxFiles, onProgress, signal, opts = {}) {
   const enqueue = (raw, from) => {
     if (!raw) return;
     raw = raw.trim();
+    // Ignore malformed serialized CDN paths instead of crawling them as local pages.
+    if (/^\/https?:?\//i.test(raw)) return;
     if (!raw || /^(data:|mailto:|tel:|javascript:|blob:|#)/i.test(raw)) return;
     let u;
     try { u = new URL(raw, from); } catch { return; }
@@ -289,7 +298,8 @@ async function crawl(startUrl, out, maxFiles, onProgress, signal, opts = {}) {
     const key = u.pathname + u.search;
     if (seen.has(key)) return;
     seen.add(key);
-    queue.push(new URL(u.pathname + u.search, origin));
+    // origin + path, not new URL(path, origin): a path starting "//" would be read as another host
+    queue.push(new URL(origin + u.pathname + u.search));
   };
 
   const scan = (text, type, from) => {
@@ -320,16 +330,21 @@ async function crawl(startUrl, out, maxFiles, onProgress, signal, opts = {}) {
     if (!sameSite(fu)) return;
     const isHtml = /html/.test(r.type);
     const ext = path.extname(fu.pathname);
-    if (homeHash === null && isHtml) homeHash = sha(r.buf);
+    const firstPage = homeHash === null && isHtml;
+    if (firstPage) homeHash = sha(r.buf);
     else if (isHtml && !ext && fu.pathname !== '/' && sha(r.buf) === homeHash) { spaRoutes.add(fu.pathname); return; }
     const file = path.join(out, toRel(fu.pathname, isHtml));
     if (!path.resolve(file).startsWith(path.resolve(out))) return;
-    const nb = bytes - (sizes.get(file) || 0) + r.buf.length;
+    const home = path.join(out, 'index.html');
+    const homeCopy = firstPage && file !== home ? Buffer.from(r.buf.toString('utf8').replace(/<base\b[^>]*>/gi, '').replace(/<head\b[^>]*>/i, m => m + '<base href="' + fu.pathname.replace(/"/g, '%22') + '">')) : null;
+    const nb = bytes - (sizes.get(file) || 0) + r.buf.length + (homeCopy ? homeCopy.length : 0);
     if (opts.maxBytes && nb > opts.maxBytes) { capped = true; return; }
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, r.buf);
     sizes.set(file, r.buf.length); bytes = nb;
     saved.add(file);
+    // A language/region redirect still needs a home page for the localhost server.
+    if (homeCopy) { fs.writeFileSync(home, homeCopy); sizes.set(home, homeCopy.length); saved.add(home); }
     recent.push({ p: path.relative(out, file).split(path.sep).join('/'), s: r.buf.length });
     if (/text|javascript|json|xml|html|css/.test(r.type) && r.buf.length < 64e6) scan(r.buf.toString('utf8'), r.type, fu.href);
   };
@@ -344,7 +359,7 @@ async function crawl(startUrl, out, maxFiles, onProgress, signal, opts = {}) {
     const batch = queue.splice(0, 16);
     await Promise.all(batch.map(async (u) => {
       try {
-        const r = await get(u.href);
+        const r = await get(u.href, {}, signal);
         if (!r.ok || (r.status === 202 && r.buf.length === 0)) { if (r.status !== 404) failed.push(`${u.pathname} -> HTTP ${r.status}`); return; }
         handle(r);
       } catch (e) { failed.push(`${u.pathname} -> ${e.message}`); }
@@ -551,7 +566,7 @@ function importSaved({ file, url, outDir, stripScripts = true, existing = false,
       if (stripScripts && /javascript|ecmascript/.test(p.type)) continue;
       const same = stripWww(pu.hostname) === siteKey;
       const rel = same ? toRel(pu.pathname, false) : path.join('_ext', segSafe(pu.hostname), toRel(pu.pathname, false));
-      if (!same) ext.push([p.location, '/' + rel.split(path.sep).join('/')]);
+      ext.push([p.location, '/' + rel.split(path.sep).join('/')]);
       plan.push({ p, rel });
     }
     if (plan.length) standalone = false;
@@ -561,7 +576,7 @@ function importSaved({ file, url, outDir, stripScripts = true, existing = false,
       written.add(rel);
       writeAt(rel, p.type === 'text/css' ? Buffer.from(relink(p.body.toString('utf8'))) : p.body);
     }
-    savePage(strip(relink(main.body.toString('utf8'))));
+    savePage(strip(relink(main.body.toString('utf8'))).replace(/<base\b[^>]*>/gi, ''));
   } else {
     let html = fs.readFileSync(file, 'utf8').replace(/^﻿/, '');
     const assets = findAssetsDir(file, html);
@@ -722,7 +737,7 @@ function makeServer(dir, getPort) {
     }
     if (snap && learn && req.method === 'GET' && pn.startsWith('/api/') && !API_SKIP.test(pn + '/') && Object.keys(snap).length < 20000) {
       try {
-        const r = await get(new URL(u.pathname + u.search, meta.origin).href, { Accept: 'application/json, */*;q=0.5' });
+        const r = await get(new URL(meta.origin + u.pathname + u.search).href, { Accept: 'application/json, */*;q=0.5' });
         const good = (r.status >= 200 && r.status < 300) || r.status === 401; // 401 = the logged-out answer a visitor sees
         if (stripWww(new URL(r.url).hostname) === siteKey && good && /json|text/.test(r.type) && r.buf.length < 2e6) {
           snap[apiKey(u.pathname, u.searchParams.entries())] = { status: r.status, type: r.type || 'application/json', body: r.buf.toString('utf8') };
@@ -743,7 +758,7 @@ function makeServer(dir, getPort) {
     if (path.extname(pn)) {
       // static-looking file we never saw (runtime-built name): pull it from the live site once and keep it
       try {
-        const r = await get(new URL(u.pathname + u.search, meta.origin).href);
+        const r = await get(new URL(meta.origin + u.pathname + u.search).href);
         if (r.ok && !/html/.test(r.type)) {
           const target = path.join(dir, toRel(pn, false));
           if (path.resolve(target).startsWith(root)) {
@@ -785,7 +800,7 @@ async function listen(dir, wantPort) {
 
 // ---------- main ----------
 function normalizeUrl(s) {
-  s = s.trim();
+  s = s.trim().replace(/\\([:./])/g, '$1').replace(/\\$/, '');
   if (!/^https?:\/\//i.test(s)) s = 'https://' + s;
   return new URL(s).href;
 }
@@ -844,7 +859,8 @@ async function main() {
   let out = flags.out ? path.resolve(flags.out) : path.join(CLONES, host);
   if (fs.existsSync(out)) out += '-' + new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12);
 
-  const r = await crawl(url, out, Number(flags.max) || 100000, null, null, { snapshotApi: !flags['no-api'] });
+  const { cloneWithBrowser } = await import('./browser-clone.mjs');
+  const r = await cloneWithBrowser(url, out, Number(flags.max) || 100000, null, null, { snapshotApi: !flags['no-api'] });
   console.log(`  ${green('Saved')} ${r.saved} files from ${r.meta.origin}`);
   if (r.apiSnap) console.log(`  ${green('Backend data:')} ${r.apiSnap.captured} public answer(s) saved${r.apiSnap.gated.length ? dim(' · need a login: ' + r.apiSnap.gated.join(' ')) : ''}${r.apiSnap.missing.length ? dim(' · not capturable: ' + r.apiSnap.missing.map((m) => m.path).join(' ')) : ''}`);
   if (r.spaRoutes.length) console.log(`  ${dim('client-side routes detected (served via index.html):')} ${r.spaRoutes.length}`);
@@ -860,5 +876,5 @@ export { envOpt, setFetchLimits, fetchMissingAssets, inspectSaved, importSaved, 
 
 // run the CLI only when executed directly (ui.mjs imports this file as a library)
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch((e) => { console.error(red('\n  Error: ') + e.message); process.exit(1); });
+  main().catch((e) => { console.error(red('\n  Error: ') + e.message); if (process.env.DEBUG) console.error(e.stack); process.exit(1); });
 }

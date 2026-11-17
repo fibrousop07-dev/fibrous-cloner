@@ -1,5 +1,6 @@
 // fibrous-cloner control panel: paste a URL, press Clone, then press "Start localhost".
 // Run: FibrousSites.cmd  (or: node ui.mjs [--no-open] [--port 4200])
+import { cloneWithBrowser, captureClone } from './browser-clone.mjs';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -311,13 +312,14 @@ function runJob(job) {
       .finally(pump);
     return;
   }
-  const layerOnly = job.kind === 'frontend'; // existing clone: re-download website files only, keep the saved backend data
-  crawl(job.url, out, 100000, (n, q) => { job.saved = n; job.queued = q; }, job.controller.signal, { snapshotApi: layerOnly ? false : job.api, onPhase: (p) => { job.phase = p; } })
+  const layerOnly = job.kind !== 'clone'; // existing clone: re-download website files only, keep the saved backend data
+  const download = job.kind === 'browser' ? (url, dir, max, progress, signal, opts) => captureClone(url, dir, { signal, onPhase: opts.onPhase }) : cloneWithBrowser;
+  download(job.url, out, 100000, (n, q) => { job.saved = n; job.queued = q; }, job.controller.signal, { snapshotApi: layerOnly ? false : job.api, onPhase: (p) => { job.phase = p; } })
     .then(async (r) => {
       if (r.saved === 0) throw new Error('nothing was saved');
       job.saved = r.saved;
-      job.result = { saved: r.saved, api: r.apiCalls, snapshot: r.apiSnap ? r.apiSnap.captured : 0, gated: r.apiSnap ? r.apiSnap.gated : [], uncaptured: r.apiSnap ? r.apiSnap.missing : [], failed: r.failed.length, spa: r.spaRoutes.length };
-      job.result.suspect = pageLooksEmpty(out); // asks the user to double-check pages that came back (almost) empty
+      job.result = { rendered: !!r.rendered, browserError: r.browserError || null, saved: r.saved, api: r.apiCalls, snapshot: r.apiSnap ? r.apiSnap.captured : 0, gated: r.apiSnap ? r.apiSnap.gated : [], uncaptured: r.apiSnap ? r.apiSnap.missing : [], failed: r.failed.length, spa: r.spaRoutes.length };
+      job.result.suspect = r.browserError || pageLooksEmpty(out); // asks the user to double-check pages that came back (almost) empty
       job.state = 'done';
       job.finishedAt = Date.now();
       if (job.auto) { try { await startClone(job.name); } catch { /* user can press Start localhost */ } }
@@ -454,6 +456,7 @@ const panel = http.createServer(async (req, res) => {
       if (u.pathname === '/api/layer') {
         const dir = cloneDir(body.name);
         if (body.action === 'download-backend') return json(res, 200, addLayerJob(body.name, 'backend'));
+        if (body.action === 'capture-browser') return json(res, 200, addLayerJob(body.name, 'browser'));
         if (body.action === 'download-frontend') return json(res, 200, addLayerJob(body.name, 'frontend'));
         if (body.action === 'set-learn') { // allow/forbid fetching missing answers from the live site while this clone runs
           const m = readMeta(dir); m.learn = !!body.value; writeMeta(dir, m);
@@ -1164,7 +1167,7 @@ function jobText(j,pos){
   const gate=(j.result&&j.result.gated?j.result.gated.length:0),miss=(j.result&&j.result.uncaptured?j.result.uncaptured.length:0);
   const tail=(gate?' · '+gate+' need a login':'')+(miss?' · '+miss+" can't be copied":'');
   if(j.state==='queued')return 'Waiting for a free slot'+(pos?' (#'+pos+' in line)':'')+(j.kind==='clone'?' · will be saved as '+j.name:'');
-  if(j.state==='running')return j.kind==='backend'?"Reading the site's code for API calls and saving their public answers…":j.phase==='api'?j.saved+' files saved · now saving backend data…':j.saved+' files saved · '+j.queued+' still to check';
+  if(j.state==='running')return j.kind==='backend'?"Reading the site's code for API calls and saving their public answers…":j.phase==='browser'?'Rendering and saving the page in a headless browser…':j.phase==='api'?j.saved+' files saved · now saving backend data…':j.saved+' files saved · '+j.queued+' still to check';
   if(j.state==='done'){
     if(j.kind==='backend')return j.result.none?'No API calls found, so no backend data to download.':plural(j.result.snapshot,'public answer')+' saved'+tail;
     if(j.kind==='frontend')return plural(j.result.saved,'file')+' saved';
@@ -1198,7 +1201,7 @@ function previewPanel(c){
     btn('sm icon','refresh','',{'aria-label':'Reload',title:'Reload',onclick:()=>{frame.src=url}}),
     btn('sm icon','globe','',{'aria-label':'Back to the home page',title:'Back to the home page',onclick:()=>{frame.src=url}}),
     h('input',{type:'text',readOnly:true,value:url,'aria-label':'Address'}),dev,
-    btn('sm ghost','upload','Looks empty?',{title:'Download its HTML/CSS from your browser instead',onclick:()=>noticeFix(c)}),
+    btn('sm ghost','upload','Recapture headlessly',{title:'Automatically render and download the page in a headless browser',onclick:()=>noticeFix(c)}),
     btn('sm','ext','Open in browser',{onclick:()=>window.open(url,'_blank')})),
     h('div',{class:'pvstage'},wrap)];
 }
@@ -1356,7 +1359,7 @@ function noticeFor(j){
   else if(j.state==='error'&&/bot protection|refused to give/i.test(j.error||''))
     addNotice({key:'e'+j.id,step:'fix',name:null,url:j.url,text:j.url+' would not give its page to fibrous-cloner (its bot protection wants a real browser).'});
 }
-function noticeFix(c){S.notices.unshift({key:'m'+Date.now(),step:'fix',name:c.name,url:siteOf(c),text:c.name+' may be empty or wrong.'});renderNotice()}
+async function noticeFix(c){await layer(c.name,'capture-browser');toast('Headless capture queued. The page and assets will be saved automatically.')}
 async function runClone(name){try{await post('/api/start',{name})}catch(e){toast(e.message,'err')}lastSig='';await loadClones()}
 function renderNotice(){
   const box=$('#notice'),n=S.notices[0];box.replaceChildren();box.hidden=!n;if(!n)return;
@@ -1366,12 +1369,12 @@ function renderNotice(){
       h('div',{class:'nbtns'},
         btn('sm','globe','Preview',{onclick:async()=>{select(n.name,true);await runClone(n.name);setTab('preview')}}),
         btn('sm','ext','Open localhost',{onclick:()=>startAndOpen(n.name)}),
-        btn('sm primary','x','Yes, clone failed',{onclick:()=>{n.step='fix';n.text=n.name+' did not copy properly.';renderNotice()}}),
+        btn('sm primary','dl','Capture automatically',{onclick:()=>{next();const c=S.items.find(c=>c.name===n.name);if(c)noticeFix(c)}}),
         btn('sm ghost','','Nevermind',{onclick:next})));
   }else{
-    box.append(icon('upload'),h('div',{class:'ntext'},h('b',{},n.text+' '),h('span',{},'Download its HTML/CSS from your own browser instead? fibrous-cloner opens the site, you press Ctrl+S, and it imports the saved page'+(n.name?' into '+n.name:'')+'.')),
+    box.append(icon('upload'),h('div',{class:'ntext'},h('b',{},n.text+' '),h('span',{},'Retry the download in a headless browser. The rendered page and its loaded assets are saved automatically.')),
       h('div',{class:'nbtns'},
-        btn('sm primary','dl','Yes, download HTML/CSS',{onclick:()=>{next();openImport({url:n.url,into:n.name||'',repair:!!n.name,watch:true,open:true})}}),
+        btn('sm primary','dl','Retry headlessly',{onclick:async()=>{next();if(n.name){const c=S.items.find(c=>c.name===n.name);if(c)await noticeFix(c)}else{try{await post('/api/clone',{urls:[n.url],auto:true,api:true});pollJobs()}catch(e){toast(e.message,'err')}}}}),
         btn('sm ghost','','Nevermind',{onclick:next})));
   }
 }

@@ -8,7 +8,7 @@ $node  = (Get-Command node -ErrorAction Stop).Source
 
 $app = Join-Path $stage 'app'
 New-Item -ItemType Directory -Force $app, (Join-Path $app 'runtime'), $dist | Out-Null
-foreach ($f in 'sitecloner.mjs','ui.mjs','app.mjs','icon.ico','icon.png','package.json','README.md') { Copy-Item (Join-Path $root $f) $app }
+foreach ($f in 'sitecloner.mjs','browser-capture.mjs','browser-clone.mjs','ui.mjs','app.mjs','icon.ico','icon.png','package.json','README.md') { Copy-Item (Join-Path $root $f) $app }
 Copy-Item (Join-Path $PSScriptRoot 'uninstall.ps1') $app
 Copy-Item $node (Join-Path $app 'runtime\node.exe')
 Compress-Archive -Path (Join-Path $app '*') -DestinationPath (Join-Path $stage 'payload.zip') -CompressionLevel Optimal

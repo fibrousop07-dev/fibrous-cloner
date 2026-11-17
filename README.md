@@ -64,6 +64,14 @@ node sitecloner.mjs --help
 | `--answer n` | Delete the copy after the preview confirmation |
 | `--answer s` | Keep serving the copy |
 
+## Automatic headless capture
+
+JavaScript pages are rendered automatically using an installed Chrome, Edge or Chromium browser. Failed plain downloads also try this path. The app waits for rendering, scrolls to load common lazy assets, and imports the browser snapshot with its loaded images, styles and fonts. No Ctrl+S, file picker or visible browser window is needed.
+
+Choose **Recapture headlessly** in Preview to refresh a broken copy. The job appears in the normal queue, supports cancellation and preserves existing files if capture fails. The browser uses a temporary profile, not your personal sessions. To select a nonstandard browser location, set `FIBROUS_CLONER_BROWSER` to its executable path.
+
+Rendered captures preserve the page's static appearance; interactive features and uncaptured resources can remain incomplete. A CAPTCHA, login, HTTP denial or regional restriction can still prevent capture. If no supported browser is installed, a successful plain download is retained and the browser error is shown.
+
 ## How website copying works
 
 The crawler fetches a page, discovers linked frontend resources, saves accessible files, and rewrites supported references for local serving. Where supported, public API responses are captured and replayed by the local server. These are downloaded responses, not a copy of the original database or backend application.
@@ -86,11 +94,11 @@ No. It cannot download private server code, databases, passwords or authenticate
 
 ### Does it clone React, Vue or other JavaScript websites?
 
-It can save accessible JavaScript bundles and assets, and the local server supports detected client-side routes. Results vary: private APIs, missing data and content that requires browser rendering can leave a copy incomplete. The crawler is not a full browser-rendering engine.
+It can save accessible JavaScript bundles and assets, and the local server supports detected client-side routes. Results vary: private APIs, missing data and content that requires browser rendering can leave a copy incomplete. The downloader automatically renders JavaScript pages with an installed Chrome, Edge or Chromium browser. Rendering cannot bypass an interactive verification, login or access block.
 
 ### Can it bypass Cloudflare, logins or CAPTCHA?
 
-No. Sites can refuse automated requests. For a permitted site, save the page in your browser with Ctrl+S and use the panel's Import action. This fallback does not guarantee a complete application copy.
+No. Sites can refuse automated requests. The app automatically tries a headless browser when a plain download is refused. If verification still requires interaction, it reports the block instead of saving a challenge page. Import remains available for existing saved pages.
 
 ### Is fibrous-cloner free and open source?
 
