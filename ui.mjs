@@ -227,6 +227,63 @@ function recentSavedPages(since) {
   return out.sort((a, b) => b.mtime - a.mtime).slice(0, 5);
 }
 
+// ---- clone sizes: counted in the background and cached ----
+// Walking every file of every clone on each list request (the window asks every 4 s) froze the preview servers,
+// which share this process. Totals are now counted asynchronously, one clone at a time, and only recounted
+// when that clone changed (a job finished, a layer was edited, the preview healed files) or every 10 minutes.
+const sizeCache = new Map(); // dir -> { v: { files, bytes }, key, at }
+const SIZE_FILE = path.join(STATE_DIR, 'sizes.json');
+try { for (const [d, v] of Object.entries(JSON.parse(fs.readFileSync(SIZE_FILE, 'utf8')))) sizeCache.set(d, { v, key: 'saved', at: 0 }); } catch { /* first run */ }
+const sizeBump = new Map();  // dir -> change counter
+const bumpSize = (dir) => sizeBump.set(dir, (sizeBump.get(dir) || 0) + 1);
+const sizeQueue = new Map(); // dir -> key, waiting to be counted
+let sizeBusy = false, sizeNow = null; // sizeNow: the clone being counted right now
+async function countFiles(dir) {
+  let files = 0, bytes = 0;
+  const stack = [dir];
+  while (stack.length) {
+    const d = stack.pop();
+    let ents; try { ents = await fs.promises.readdir(d, { withFileTypes: true }); } catch { continue; }
+    const todo = [];
+    for (const e of ents) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) stack.push(p);
+      else if (!e.name.startsWith('_sitecloner')) todo.push(p);
+    }
+    for (let i = 0; i < todo.length; i += 64) { // a folder's files are stat'ed 64 at a time on the thread pool
+      const sts = await Promise.all(todo.slice(i, i + 64).map((p) => fs.promises.stat(p).catch(() => null)));
+      for (const st of sts) if (st) { bytes += st.size; files++; }
+    }
+  }
+  return { files, bytes };
+}
+async function drainSizes() {
+  if (sizeBusy) return;
+  sizeBusy = true;
+  try {
+    while (sizeQueue.size) {
+      const [dir, key] = sizeQueue.entries().next().value;
+      sizeQueue.delete(dir);
+      sizeNow = dir;
+      const v = await countFiles(dir);
+      sizeCache.set(dir, { v, key, at: Date.now() });
+      sizeNow = null;
+    }
+    // Remember the totals, so the next launch shows sizes at once while it recounts.
+    try { fs.writeFileSync(SIZE_FILE, JSON.stringify(Object.fromEntries([...sizeCache].map(([d, c]) => [d, c.v])))); } catch { /* not important */ }
+  } finally { sizeBusy = false; sizeNow = null; }
+}
+function cloneSize(dir, key) {
+  const c = sizeCache.get(dir);
+  const stale = !c || c.key !== key || Date.now() - c.at > (key.endsWith(':busy') ? 3000 : 600000);
+  if (stale && dir !== sizeNow && !sizeQueue.has(dir)) { sizeQueue.set(dir, key); drainSizes(); }
+  let hasIndex = false;
+  try { hasIndex = fs.statSync(path.join(dir, 'index.html')).size > 0; } catch { /* none */ }
+  // Until the first count lands, report the index page so the clone is not shown as empty.
+  const v = c ? c.v : { files: hasIndex ? 1 : 0, bytes: 0, counting: true };
+  return { ...v, hasIndex };
+}
+
 function listClones() {
   const out = [];
   for (const c of scan().clones) {
@@ -235,7 +292,7 @@ function listClones() {
     const r = running.get(c.name);
     out.push({
       name: c.name, origin: meta.origin || '', createdAt: meta.createdAt || '', captureStatus: meta.captureStatus || '', captureWarning: meta.captureWarning || '',
-      frontend: frontendStats(dir),               // the website files
+      frontend: cloneSize(dir, `${sizeBump.get(dir) || 0}:${r ? r.stats.healed.length : 0}${[...jobs.values()].some((j) => j.name === c.name && isActive(j)) ? ':busy' : ''}`), // the website files
       backend: backendStats(dir),                 // saved public API answers (null = none saved)
       endpointsChecked: !!meta.endpoints || !!meta.backend,
       endpointsKnown: Object.keys(meta.endpoints || {}).length,
@@ -307,8 +364,8 @@ function runJob(job) {
   const out = cloneDir(job.name);
   if (job.kind === 'backend') { // existing clone: only (re)download its backend data; the frontend is never touched
     refreshApi(out, job.controller.signal)
-      .then((r) => { job.result = { snapshot: r.captured, gated: r.gated, uncaptured: r.missing, none: !!r.none }; job.state = 'done'; job.finishedAt = Date.now(); })
-      .catch((e) => { job.state = job.controller.signal.aborted ? 'cancelled' : 'error'; job.error = e.message; job.finishedAt = Date.now(); })
+      .then((r) => { job.result = { snapshot: r.captured, gated: r.gated, uncaptured: r.missing, none: !!r.none }; job.state = 'done'; job.finishedAt = Date.now(); bumpSize(cloneDir(job.name)); })
+      .catch((e) => { job.state = job.controller.signal.aborted ? 'cancelled' : 'error'; job.error = e.message; job.finishedAt = Date.now(); bumpSize(cloneDir(job.name)); })
       .finally(pump);
     return;
   }
@@ -321,13 +378,13 @@ function runJob(job) {
       job.result = { rendered: !!r.rendered, partial: !!r.partial, browserError: r.browserError || null, saved: r.saved, api: r.apiCalls, snapshot: r.apiSnap ? r.apiSnap.captured : 0, gated: r.apiSnap ? r.apiSnap.gated : [], uncaptured: r.apiSnap ? r.apiSnap.missing : [], failed: r.failed.length, spa: r.spaRoutes.length };
       job.result.suspect = r.browserError || pageLooksEmpty(out); // asks the user to double-check pages that came back (almost) empty
       job.state = 'done';
-      job.finishedAt = Date.now();
+      job.finishedAt = Date.now(); bumpSize(cloneDir(job.name));
       if (job.auto) { try { await startClone(job.name); } catch { /* user can press Start localhost */ } }
     })
     .catch((e) => {
       job.state = job.controller.signal.aborted ? 'cancelled' : 'error';
       job.error = e.message;
-      job.finishedAt = Date.now();
+      job.finishedAt = Date.now(); bumpSize(cloneDir(job.name));
       if (!layerOnly) fs.rmSync(out, { recursive: true, force: true }); // a failed fresh clone leaves nothing; a failed re-download never deletes what you already had
     })
     .finally(pump);
@@ -421,6 +478,7 @@ const panel = http.createServer(async (req, res) => {
   if (req.method === 'POST') {
     if (req.headers['x-fibrous-sites'] !== '1') return json(res, 403, { error: 'missing header' });
     const body = await readBody(req);
+    res.once('finish', () => { try { if (body && safeName(body.name)) bumpSize(cloneDir(body.name)); } catch { /* not a clone action */ } }); // recount sizes after any change to a clone
     try {
       if (u.pathname === '/api/clone') {
         // accepts one URL or many (space, comma or newline separated) and adds them all to the queue

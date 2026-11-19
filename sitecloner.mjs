@@ -142,7 +142,7 @@ async function snapshotApi({ origin, endpoints, out, signal }) {
   const entries = {};
   const missing = new Map(); // path -> why it could not be copied
   let requests = 0;
-  const MAX_REQ = 1000;
+  const MAX_REQ = 5000;
   const aborted = () => { if (signal?.aborted) throw new Error('cancelled'); };
 
   const call = async (pathname, pairs) => {
@@ -341,6 +341,10 @@ async function crawl(startUrl, out, maxFiles, onProgress, signal, opts = {}) {
 
   const scan = (text, type, from) => {
     if (/html/.test(type)) {
+      // A page's <base href> decides what its relative links mean; ignoring it made "./assets/x" on /about
+      // resolve to /about/assets/x, which the site answered with its HTML shell, nesting folders without end.
+      const bm = /<base\b[^>]*\bhref\s*=\s*["']([^"']+)["']/i.exec(text);
+      if (bm) { try { from = new URL(bm[1], from).href; } catch { /* keep the page address */ } }
       for (const m of text.matchAll(/\b(?:href|src|data-src|data-href|data-poster|poster)\s*=\s*["']([^"']+)["']/gi)) enqueue(m[1], from);
       for (const m of text.matchAll(/\bsrcset\s*=\s*["']([^"']+)["']/gi)) for (const p of m[1].split(',')) enqueue(p.trim().split(/\s+/)[0], from);
       for (const m of text.matchAll(/<meta\b[^>]*>/gi)) {
@@ -366,7 +370,10 @@ async function crawl(startUrl, out, maxFiles, onProgress, signal, opts = {}) {
     const fu = new URL(r.url);
     if (!sameSite(fu)) return;
     const isHtml = /html/.test(r.type);
+    // Optional hook (hosted use): drop any login/sign-up form from a page before saving it.
+    if (isHtml && opts.stripLogin) { const s = opts.stripLogin(r.buf.toString('utf8')); if (s.changed) r = { ...r, buf: Buffer.from(s.html) }; }
     const ext = path.extname(fu.pathname);
+    if (isHtml && ext && !/^\.(html?|php\d?|aspx?|jsp|cfm|shtml|xhtml)$/i.test(ext)) return; // soft 404: the HTML shell served for an image, script, etc.
     const firstPage = homeHash === null && isHtml;
     if (firstPage) homeHash = sha(r.buf);
     else if (isHtml && !ext && fu.pathname !== '/' && sha(r.buf) === homeHash) { spaRoutes.add(fu.pathname); return; }
@@ -393,21 +400,39 @@ async function crawl(startUrl, out, maxFiles, onProgress, signal, opts = {}) {
   handle(first);
   for (const extra of ['/', '/robots.txt', '/sitemap.xml', '/favicon.ico', '/manifest.webmanifest', '/site.webmanifest']) enqueue(extra, origin);
 
-  while (queue.length && saved.size < maxFiles) {
-    if (signal?.aborted) throw new Error('cancelled');
-    if (capped) throw capError();
-    const batch = queue.splice(0, 16);
-    await Promise.all(batch.map(async (u) => {
-      try {
-        const r = await get(u.href, {}, signal);
-        if (!r.ok || (r.status === 202 && r.buf.length === 0)) { if (r.status !== 404) failed.push(`${u.pathname} -> HTTP ${r.status}`); return; }
-        handle(r);
-      } catch (e) { failed.push(`${u.pathname} -> ${e.message}`); }
-    }));
-    if (capped) throw capError();
+  // A continuous pool: each worker takes the next URL as soon as it is free, so one slow file never holds up the rest.
+  const width = Math.max(1, Math.min(64, Number(opts.concurrency || process.env.CRAWL_CONCURRENCY) || 16));
+  let inflight = 0, wake = null, lastReport = 0;
+  const report = (force) => {
+    const t = Date.now();
+    if (!force && t - lastReport < 250) return;
+    lastReport = t;
     if (onProgress) onProgress(saved.size, queue.length, recent.splice(0));
     else process.stdout.write(`\r  ${dim('crawling')} ${saved.size} files, ${queue.length} queued   `);
-  }
+  };
+  const worker = async () => {
+    for (;;) {
+      if (signal?.aborted || capped || saved.size >= maxFiles) return;
+      const u = queue.shift();
+      if (!u) {
+        if (!inflight) { wake?.(); return; }
+        await new Promise((r) => { const prev = wake; wake = () => { wake = null; prev?.(); r(); }; });
+        continue;
+      }
+      inflight++;
+      try {
+        const r = await get(u.href, {}, signal);
+        if (!r.ok || (r.status === 202 && r.buf.length === 0)) { if (r.status !== 404) failed.push(`${u.pathname} -> HTTP ${r.status}`); }
+        else handle(r);
+      } catch (e) { failed.push(`${u.pathname} -> ${e.message}`); }
+      finally { inflight--; wake?.(); }
+      report(false);
+    }
+  };
+  await Promise.all(Array.from({ length: width }, worker));
+  if (signal?.aborted) throw new Error('cancelled');
+  if (capped) throw capError();
+  report(true);
   if (!onProgress) process.stdout.write('\n');
 
   let apiSnap = null;
@@ -722,7 +747,16 @@ async function fetchMissingAssets(dir, pageUrl, { stripScripts = true, max = 300
 function makeServer(dir, getPort) {
   const meta = JSON.parse(fs.readFileSync(path.join(dir, META), 'utf8'));
   const siteKey = stripWww(new URL(meta.origin).hostname);
-  const originRe = new RegExp(`https?:\\/\\/(?:www\\.)?${esc(siteKey)}`, 'gi');
+  // Full, protocol-relative and JSON-escaped forms of the site's own address ("https://x", "//www.x", "https:\/\/x"),
+  // never a longer host that only starts the same ("x.com" for "x.co").
+  const originRe = new RegExp(String.raw`(?:https?:)?\\?\/\\?\/(?:www\.)?` + esc(siteKey) + String.raw`(?![\w-])`, 'gi');
+  // Pages also get a small guard: links and window.open calls that the site's scripts build at run time with
+  // its live address are sent back to this copy, and links within the copy stay in the same window.
+  const guard = '<script>(()=>{const H=new RegExp(' + JSON.stringify('^(www\\.)?' + esc(siteKey) + '$') + ',"i"),'
+    + 'fix=u=>{try{const x=new URL(u,location.href);if(H.test(x.hostname))return location.origin+x.pathname+x.search+x.hash}catch(e){}return null};'
+    + 'document.addEventListener("click",e=>{const a=e.target&&e.target.closest&&e.target.closest("a[href]");if(!a)return;const f=fix(a.getAttribute("href"));if(f)a.href=f;'
+    + 'try{if(a.target==="_blank"&&new URL(a.href).origin===location.origin)a.removeAttribute("target")}catch(e){}},true);'
+    + 'const o=window.open;window.open=function(u,...r){const f=u&&fix(String(u));return o.call(this,f||u,...r)}})()</script>';
   const stats = { healed: [], blocked: new Set(), missing: new Set(), snapshotHits: 0 };
   const root = path.resolve(dir);
   const snapFile = path.join(dir, API_FILE);
@@ -761,10 +795,39 @@ function makeServer(dir, getPort) {
 
   const send = (res, req, file, buf) => {
     const ext = path.extname(file).toLowerCase();
+    if (!buf && !REWRITE_EXT.has(ext)) return stream(res, req, file, ext);
     let body = buf ?? fs.readFileSync(file);
-    if (REWRITE_EXT.has(ext)) body = Buffer.from(body.toString('utf8').replace(originRe, `http://localhost:${getPort()}`));
+    if (REWRITE_EXT.has(ext)) {
+      let t = body.toString('utf8').replace(originRe, `http://localhost:${getPort()}`);
+      if (ext === '.html' || ext === '.htm') t = /<head\b[^>]*>/i.test(t) ? t.replace(/<head\b[^>]*>/i, (m) => m + guard) : guard + t;
+      body = Buffer.from(t);
+    }
     res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Content-Length': body.length, 'Cache-Control': 'no-store' });
     res.end(req.method === 'HEAD' ? undefined : body);
+  };
+
+  // Binary files (images, video, fonts, models) are streamed instead of read whole, so a large video never
+  // holds up other requests, and byte ranges are honoured so video can seek.
+  const stream = (res, req, file, ext) => {
+    fs.stat(file, (err, st) => {
+      if (err) { res.writeHead(404); return res.end('not found'); }
+      const head = { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-store' };
+      const m = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
+      let start = 0, end = st.size - 1, code = 200;
+      if (m && (m[1] || m[2])) {
+        if (m[1]) { start = Number(m[1]); if (m[2]) end = Math.min(end, Number(m[2])); }
+        else start = Math.max(0, st.size - Number(m[2]));
+        if (start > end || start >= st.size) { res.writeHead(416, { 'Content-Range': `bytes */${st.size}` }); return res.end(); }
+        code = 206; head['Content-Range'] = `bytes ${start}-${end}/${st.size}`;
+      }
+      head['Content-Length'] = st.size ? end - start + 1 : 0;
+      res.writeHead(code, head);
+      if (req.method === 'HEAD' || !st.size) return res.end();
+      const rs = fs.createReadStream(file, { start, end });
+      rs.on('error', () => res.destroy());
+      res.on('close', () => rs.destroy());
+      rs.pipe(res);
+    });
   };
 
   const server = http.createServer(async (req, res) => {
